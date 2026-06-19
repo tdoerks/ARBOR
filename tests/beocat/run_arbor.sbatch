@@ -12,6 +12,8 @@
 #SBATCH --mem=8G
 #SBATCH --time=2-00:00:00
 #SBATCH --output=arbor_head_%j.log
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=tyler.tyler.d@gmail.com   # <- change to your preferred address (KSU email is most reliable on Beocat)
 
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
