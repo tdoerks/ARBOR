@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>ARBOR Dashboard — viral tiling-amplicon results</title>
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+<script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+<style>
+  :root{
+    --bg:#0f1419; --panel:#1a2129; --panel2:#222b35; --ink:#e6edf3; --muted:#8b97a6;
+    --accent:#3fb984; --accent2:#4aa3df; --warn:#e0a458; --bad:#e06c75; --line:#2b3642;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  header{padding:18px 24px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  header h1{font-size:18px;margin:0;letter-spacing:.5px}
+  header .tag{color:var(--muted);font-size:12px}
+  .leaf{color:var(--accent)}
+  main{padding:0 24px 48px}
+  .drop{margin:18px 0;border:2px dashed var(--line);border-radius:10px;padding:22px;text-align:center;color:var(--muted);transition:.15s;cursor:pointer;background:var(--panel)}
+  .drop.hover{border-color:var(--accent);color:var(--ink);background:var(--panel2)}
+  .drop b{color:var(--accent)}
+  .loaded{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{background:var(--panel2);border:1px solid var(--line);border-radius:20px;padding:3px 11px;font-size:12px;color:var(--muted)}
+  .chip b{color:var(--ink);font-weight:600}
+  nav{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-top:8px}
+  nav button{background:none;border:none;color:var(--muted);padding:11px 18px;font-size:14px;cursor:pointer;border-bottom:2px solid transparent}
+  nav button.active{color:var(--ink);border-bottom-color:var(--accent)}
+  nav button:hover{color:var(--ink)}
+  .tab{display:none;padding:22px 0}
+  .tab.active{display:block}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px;margin-bottom:18px}
+  .card h3{margin:0 0 14px;font-size:15px}
+  .controls{display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-bottom:14px;color:var(--muted);font-size:13px}
+  select,input[type=number]{background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:5px 8px}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  th,td{padding:6px 9px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+  th{color:var(--muted);font-weight:600;cursor:pointer;position:sticky;top:0;background:var(--panel)}
+  th:hover{color:var(--ink)}
+  tbody tr:hover{background:var(--panel2)}
+  .scroll{max-height:560px;overflow:auto;border:1px solid var(--line);border-radius:8px}
+  .pass{color:var(--accent)} .fail{color:var(--bad)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:18px}
+  .kpi{display:flex;gap:18px;flex-wrap:wrap}
+  .kpi .box{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px 16px;min-width:120px}
+  .kpi .box .n{font-size:22px;font-weight:700;color:var(--accent)}
+  .kpi .box .l{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .empty{color:var(--muted);text-align:center;padding:40px;font-style:italic}
+  .axis text{fill:var(--muted);font-size:10px}
+  .axis path,.axis line{stroke:var(--line)}
+  svg{max-width:100%}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:8px}
+  .sw{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+  a.link{color:var(--accent2)}
+  code{background:var(--panel2);padding:1px 5px;border-radius:4px;font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🌳 ARBOR <span class="tag">Amplicon Reconstruction, Bootstrapping &amp; Outbreak Resolution — results dashboard</span></h1>
+</header>
+<main>
+  <div id="drop" class="drop">
+    <b>Drop ARBOR result files here</b> (or click to choose) — iVar <code>*.tsv</code>, LoFreq <code>*.vcf[.gz]</code>,
+    mosdepth <code>*.summary.txt</code> / <code>*.per-base.bed.gz</code>, IQ-TREE <code>*.treefile</code>, and a metadata <code>*.csv</code>.
+    <input id="file" type="file" multiple style="display:none"/>
+  </div>
+  <div id="loaded" class="loaded"></div>
+
+  <nav>
+    <button data-tab="summary" class="active">Run summary</button>
+    <button data-tab="variants">iSNVs / Variants</button>
+    <button data-tab="coverage">Coverage</button>
+    <button data-tab="phylo">Phylogeny</button>
+  </nav>
+
+  <section id="summary" class="tab active"></section>
+  <section id="variants" class="tab"></section>
+  <section id="coverage" class="tab"></section>
+  <section id="phylo" class="tab"></section>
+</main>
+
+<script>
+/* ============================ state ============================ */
+const S = {
+  variants: {},   // sample -> [ {region,pos,ref,alt,freq,depth,pass,caller} ]
+  cov: {},        // sample -> { perbase: {seg:[{pos,depth}]}, summary: {seg:{mean,length}} }
+  trees: {},      // segment -> newick string
+  meta: {},       // sample -> {col:val}
+  metaCols: [],
+  samples: new Set(), segments: new Set(),
+};
+const palette = d3.schemeTableau10.concat(d3.schemeSet3);
+
+/* ============================ file routing ============================ */
+const drop=document.getElementById('drop'), fileInput=document.getElementById('file');
+drop.onclick=()=>fileInput.click();
+fileInput.onchange=e=>handleFiles(e.target.files);
+['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('hover')}));
+['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('hover')}));
+drop.addEventListener('drop',e=>handleFiles(e.dataTransfer.files));
+
+function sampleFromName(n){ return n.replace(/\.(tsv|vcf|gz|txt|bed|treefile|nwk|csv|filtered)/gi,'')
+  .replace(/[._](ivar|lofreq|variants|filtered|mosdepth|per-base|summary|consensus)/gi,'')
+  .replace(/_S\d+_L\d+.*/,''); }
+
+async function handleFiles(list){
+  for(const f of list){
+    const name=f.name, low=name.toLowerCase();
+    try{
+      if(low.endsWith('.gz') && low.includes('per-base')) await readCov(f,true);
+      else if(low.includes('summary')&&low.endsWith('.txt')) await readMosSummary(f);
+      else if(low.includes('per-base')&&low.endsWith('.bed')) await readCov(f,false);
+      else if(low.endsWith('.tsv')) await readIvar(f);
+      else if(low.endsWith('.vcf')||low.endsWith('.vcf.gz')) await readVcf(f,low.endsWith('.gz'));
+      else if(low.endsWith('.treefile')||low.endsWith('.nwk')||low.endsWith('.nexus')) await readTree(f);
+      else if(low.endsWith('.csv')) await readMeta(f);
+    }catch(err){ console.error('failed',name,err); }
+  }
+  renderChips(); renderAll();
+}
+const readText=(f,gz)=>new Promise((res,rej)=>{const r=new FileReader();
+  r.onload=()=>{ try{ res(gz?pako.ungzip(new Uint8Array(r.result),{to:'string'}):r.result);}catch(e){rej(e)} };
+  r.onerror=rej; gz?r.readAsArrayBuffer(f):r.readAsText(f);});
+
+/* ============================ parsers ============================ */
+async function readIvar(f){
+  const txt=await readText(f,false); const lines=txt.trim().split(/\r?\n/);
+  const h=lines[0].split('\t'); const idx=c=>h.indexOf(c);
+  const iR=idx('REGION'),iP=idx('POS'),iRef=idx('REF'),iAlt=idx('ALT'),iF=idx('ALT_FREQ'),iD=idx('TOTAL_DP'),iPass=idx('PASS');
+  if(iR<0||iF<0) return; // not an iVar tsv
+  const samp=sampleFromName(f.name); const rows=[];
+  for(let i=1;i<lines.length;i++){const c=lines[i].split('\t'); if(c.length<h.length)continue;
+    rows.push({region:c[iR],pos:+c[iP],ref:c[iRef],alt:c[iAlt],freq:+c[iF],depth:+c[iD],
+      pass:(c[iPass]||'').toUpperCase()==='TRUE',caller:'iVar'});
+    S.segments.add(c[iR]);}
+  S.variants[samp]=(S.variants[samp]||[]).concat(rows); S.samples.add(samp);
+}
+async function readVcf(f,gz){
+  const txt=await readText(f,gz); const samp=sampleFromName(f.name); const rows=[];
+  for(const ln of txt.split(/\r?\n/)){ if(!ln||ln[0]==='#')continue;
+    const c=ln.split('\t'); if(c.length<8)continue;
+    const info=Object.fromEntries(c[7].split(';').map(kv=>kv.split('=')));
+    const af=info.AF?+info.AF:(info.DP4?dp4af(info.DP4):NaN);
+    rows.push({region:c[0],pos:+c[1],ref:c[3],alt:c[4],freq:af,depth:info.DP?+info.DP:NaN,
+      pass:(c[6]==='PASS'||c[6]==='.'),caller:'LoFreq'});
+    S.segments.add(c[0]); }
+  S.variants[samp]=(S.variants[samp]||[]).concat(rows); S.samples.add(samp);
+}
+function dp4af(s){const p=s.split(',').map(Number);const r=p[0]+p[1],a=p[2]+p[3];return a/(r+a||1);}
+async function readMosSummary(f){
+  const txt=await readText(f,false); const samp=sampleFromName(f.name);
+  S.cov[samp]=S.cov[samp]||{perbase:{},summary:{}};
+  for(const ln of txt.trim().split(/\r?\n/)){const c=ln.split('\t');
+    if(c[0]==='chrom'||/_region$/.test(c[0])||c[0]==='total')continue;
+    if(c.length>=4&&!isNaN(+c[3])){S.cov[samp].summary[c[0]]={length:+c[1],mean:+c[3]};S.segments.add(c[0]);}}
+  S.samples.add(samp);
+}
+async function readCov(f,gz){
+  const txt=await readText(f,gz); const samp=sampleFromName(f.name);
+  S.cov[samp]=S.cov[samp]||{perbase:{},summary:{}};
+  const pb=S.cov[samp].perbase;
+  for(const ln of txt.split(/\r?\n/)){ if(!ln)continue; const c=ln.split('\t'); if(c.length<4)continue;
+    const seg=c[0],s=+c[1],e=+c[2],d=+c[3]; (pb[seg]=pb[seg]||[]);
+    // store midpoint to keep it light; downsample handled at render
+    pb[seg].push({pos:Math.floor((s+e)/2),depth:d}); S.segments.add(seg);}
+  S.samples.add(samp);
+}
+async function readTree(f){
+  const txt=await readText(f,false);
+  let seg=f.name.replace(/\.(treefile|nwk|nexus)$/i,'');
+  S.trees[seg]=txt.trim(); S.segments.add(seg);
+}
+async function readMeta(f){
+  const txt=await readText(f,false); const lines=txt.trim().split(/\r?\n/);
+  const sep=lines[0].includes('\t')?'\t':','; const h=lines[0].split(sep).map(x=>x.trim());
+  S.metaCols=h.slice(1);
+  for(let i=1;i<lines.length;i++){const c=lines[i].split(sep); const id=(c[0]||'').trim(); if(!id)continue;
+    const o={}; h.forEach((k,j)=>{if(j>0)o[k]=(c[j]||'').trim()}); S.meta[id]=o;}
+}
+
+/* ============================ chips ============================ */
+function renderChips(){
+  const el=document.getElementById('loaded'); el.innerHTML='';
+  const add=(l,n)=>{if(n)el.insertAdjacentHTML('beforeend',`<span class="chip"><b>${n}</b> ${l}</span>`);};
+  add('samples',S.samples.size); add('segments',S.segments.size);
+  add('variant sets',Object.keys(S.variants).length);
+  add('coverage sets',Object.keys(S.cov).length);
+  add('trees',Object.keys(S.trees).length);
+  add('metadata rows',Object.keys(S.meta).length);
+}
+
+/* ============================ tabs ============================ */
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active'); document.getElementById(b.dataset.tab).classList.add('active');
+});
+function renderAll(){ renderSummary(); renderVariants(); renderCoverage(); renderPhylo(); }
+const segList=()=>[...S.segments].filter(s=>!Object.keys(S.trees).includes(s)||true).sort();
+const sampList=()=>[...S.samples].sort();
+
+/* ============================ Run summary ============================ */
+function renderSummary(){
+  const el=document.getElementById('summary');
+  if(!S.samples.size){el.innerHTML='<div class="empty">Upload result files to populate the summary.</div>';return;}
+  const segs=[...S.segments].sort();
+  let kpi=`<div class="kpi">
+    <div class="box"><div class="n">${S.samples.size}</div><div class="l">Samples</div></div>
+    <div class="box"><div class="n">${segs.length}</div><div class="l">Segments</div></div>
+    <div class="box"><div class="n">${Object.values(S.variants).reduce((a,v)=>a+v.filter(x=>x.pass).length,0)}</div><div class="l">PASS variants</div></div>
+    <div class="box"><div class="n">${Object.keys(S.trees).length}</div><div class="l">Trees</div></div></div>`;
+  let rows=sampList().map(s=>{
+    const v=(S.variants[s]||[]); const pass=v.filter(x=>x.pass).length;
+    const cov=S.cov[s]?S.cov[s].summary:{};
+    const covCells=segs.map(seg=>{const m=cov[seg]?cov[seg].mean:null;
+      return `<td>${m==null?'<span class="empty" style="padding:0">—</span>':m.toFixed(0)+'×'}</td>`;}).join('');
+    const m=S.meta[s]||{}; const metaCells=S.metaCols.map(c=>`<td>${m[c]||''}</td>`).join('');
+    return `<tr><td><b>${s}</b></td><td>${pass}</td>${covCells}${metaCells}</tr>`;
+  }).join('');
+  const head=`<tr><th>Sample</th><th>PASS variants</th>${segs.map(s=>`<th>${s} cov</th>`).join('')}${S.metaCols.map(c=>`<th>${c}</th>`).join('')}</tr>`;
+  el.innerHTML=`<div class="card"><h3>Run overview</h3>${kpi}</div>
+    <div class="card"><h3>Per-sample summary</h3><div class="scroll"><table><thead>${head}</thead><tbody>${rows}</tbody></table></div></div>`;
+}
+
+/* ============================ Variants ============================ */
+let vSort={k:'pos',dir:1};
+function renderVariants(){
+  const el=document.getElementById('variants');
+  const all=[]; for(const s of Object.keys(S.variants)) for(const v of S.variants[s]) all.push({sample:s,...v});
+  if(!all.length){el.innerHTML='<div class="empty">Upload iVar <code>.tsv</code> or LoFreq <code>.vcf</code> files to explore iSNVs.</div>';return;}
+  el.innerHTML=`<div class="card"><h3>iSNV frequency by position</h3>
+      <div class="controls">
+        Segment <select id="vSeg"></select>
+        Min freq <input id="vFreq" type="number" min="0" max="1" step="0.01" value="0.01" style="width:80px"/>
+        <label><input id="vPass" type="checkbox" checked/> PASS only</label>
+      </div><div id="vPlot"></div><div id="vLegend" class="legend"></div></div>
+    <div class="card"><h3>Variant table</h3><div class="scroll"><table id="vTable"></table></div></div>`;
+  const segSel=document.getElementById('vSeg');
+  [...new Set(all.map(v=>v.region))].sort().forEach(s=>segSel.add(new Option(s,s)));
+  const upd=()=>{ const seg=segSel.value, mf=+document.getElementById('vFreq').value, passOnly=document.getElementById('vPass').checked;
+    const f=all.filter(v=>v.region===seg && v.freq>=mf && (!passOnly||v.pass));
+    drawVariantPlot(f,seg); drawVariantTable(all.filter(v=>v.freq>=mf&&(!passOnly||v.pass))); };
+  segSel.onchange=upd; document.getElementById('vFreq').oninput=upd; document.getElementById('vPass').onchange=upd;
+  upd();
+}
+function colorFor(sample){const arr=sampList();return palette[arr.indexOf(sample)%palette.length];}
+function drawVariantPlot(rows,seg){
+  const wrap=d3.select('#vPlot'); wrap.selectAll('*').remove();
+  const W=wrap.node().clientWidth||820,H=300,m={t:14,r:14,b:34,l:46};
+  if(!rows.length){wrap.append('div').attr('class','empty').text('No variants pass the current filters.');return;}
+  const svg=wrap.append('svg').attr('width',W).attr('height',H);
+  const maxP=d3.max(rows,d=>d.pos)||1;
+  const x=d3.scaleLinear().domain([0,maxP]).range([m.l,W-m.r]);
+  const y=d3.scaleLinear().domain([0,1]).range([H-m.b,m.t]);
+  svg.append('g').attr('class','axis').attr('transform',`translate(0,${H-m.b})`).call(d3.axisBottom(x).ticks(8));
+  svg.append('g').attr('class','axis').attr('transform',`translate(${m.l},0)`).call(d3.axisLeft(y).ticks(5).tickFormat(d3.format('.0%')));
+  svg.append('text').attr('x',(W)/2).attr('y',H-4).attr('fill','var(--muted)').attr('font-size',11).attr('text-anchor','middle').text(`position on ${seg}`);
+  const samples=[...new Set(rows.map(r=>r.sample))];
+  svg.selectAll('circle').data(rows).join('circle')
+    .attr('cx',d=>x(d.pos)).attr('cy',d=>y(d.freq)).attr('r',4)
+    .attr('fill',d=>colorFor(d.sample)).attr('opacity',.8)
+    .append('title').text(d=>`${d.sample}\n${seg}:${d.pos} ${d.ref}>${d.alt}\nfreq ${(d.freq*100).toFixed(1)}%  depth ${d.depth}`);
+  const lg=d3.select('#vLegend'); lg.selectAll('*').remove();
+  samples.forEach(s=>lg.append('span').html(`<span class="sw" style="background:${colorFor(s)}"></span>${s}`));
+}
+function drawVariantTable(rows){
+  rows=rows.slice().sort((a,b)=>{const k=vSort.k;return (a[k]>b[k]?1:a[k]<b[k]?-1:0)*vSort.dir;});
+  const cols=[['sample','Sample'],['region','Segment'],['pos','Pos'],['ref','Ref'],['alt','Alt'],
+    ['freq','Freq'],['depth','Depth'],['caller','Caller'],['pass','PASS']];
+  const head=`<thead><tr>${cols.map(c=>`<th data-k="${c[0]}">${c[1]}</th>`).join('')}</tr></thead>`;
+  const body='<tbody>'+rows.slice(0,3000).map(r=>`<tr>
+    <td><b>${r.sample}</b></td><td>${r.region}</td><td>${r.pos}</td><td>${r.ref}</td><td>${r.alt}</td>
+    <td>${isNaN(r.freq)?'':(r.freq*100).toFixed(1)+'%'}</td><td>${isNaN(r.depth)?'':r.depth}</td>
+    <td>${r.caller}</td><td class="${r.pass?'pass':'fail'}">${r.pass?'PASS':'fail'}</td></tr>`).join('')+'</tbody>';
+  const t=document.getElementById('vTable'); t.innerHTML=head+body;
+  t.querySelectorAll('th').forEach(th=>th.onclick=()=>{const k=th.dataset.k;vSort.dir=(vSort.k===k?-vSort.dir:1);vSort.k=k;drawVariantTable(rows);});
+}
+
+/* ============================ Coverage ============================ */
+function renderCoverage(){
+  const el=document.getElementById('coverage');
+  const havePB=Object.values(S.cov).some(c=>Object.keys(c.perbase).length);
+  if(!Object.keys(S.cov).length){el.innerHTML='<div class="empty">Upload mosdepth <code>*.per-base.bed.gz</code> (depth plots) and/or <code>*.summary.txt</code> (mean depth).</div>';return;}
+  el.innerHTML=`<div class="card"><h3>Coverage depth across segment</h3>
+    <div class="controls">Segment <select id="cSeg"></select>
+      <label><input id="cLog" type="checkbox"/> log depth</label>
+      ${havePB?'':'<span>(no per-base files — showing mean depth from summaries)</span>'}</div>
+    <div id="cPlot"></div><div id="cLegend" class="legend"></div></div>`;
+  const segSel=document.getElementById('cSeg');
+  [...S.segments].filter(s=>!S.trees[s]||true).sort().forEach(s=>segSel.add(new Option(s,s)));
+  const upd=()=>drawCoverage(segSel.value,document.getElementById('cLog').checked);
+  segSel.onchange=upd; document.getElementById('cLog').onchange=upd; upd();
+}
+function drawCoverage(seg,log){
+  const wrap=d3.select('#cPlot'); wrap.selectAll('*').remove();
+  const W=wrap.node().clientWidth||820,H=320,m={t:14,r:14,b:36,l:54};
+  const series=[]; for(const s of Object.keys(S.cov)){const pb=S.cov[s].perbase[seg];
+    if(pb&&pb.length) series.push({sample:s,data:downsample(pb,1200)});}
+  const svg=wrap.append('svg').attr('width',W).attr('height',H);
+  if(!series.length){
+    // fall back to mean-depth bars from summaries
+    const means=Object.keys(S.cov).map(s=>({sample:s,mean:(S.cov[s].summary[seg]||{}).mean})).filter(d=>d.mean!=null);
+    if(!means.length){wrap.append('div').attr('class','empty').text('No coverage data for this segment.');return;}
+    const x=d3.scaleBand().domain(means.map(d=>d.sample)).range([m.l,W-m.r]).padding(.2);
+    const y=d3.scaleLinear().domain([0,d3.max(means,d=>d.mean)]).nice().range([H-m.b,m.t]);
+    svg.append('g').attr('class','axis').attr('transform',`translate(0,${H-m.b})`).call(d3.axisBottom(x)).selectAll('text').attr('transform','rotate(-40)').style('text-anchor','end');
+    svg.append('g').attr('class','axis').attr('transform',`translate(${m.l},0)`).call(d3.axisLeft(y));
+    svg.selectAll('rect').data(means).join('rect').attr('x',d=>x(d.sample)).attr('y',d=>y(d.mean))
+      .attr('width',x.bandwidth()).attr('height',d=>H-m.b-y(d.mean)).attr('fill',d=>colorFor(d.sample))
+      .append('title').text(d=>`${d.sample}: ${d.mean.toFixed(0)}× mean`);
+    svg.append('text').attr('x',W/2).attr('y',12).attr('fill','var(--muted)').attr('font-size',11).attr('text-anchor','middle').text(`mean depth — ${seg}`);
+    return;
+  }
+  const maxP=d3.max(series,s=>d3.max(s.data,d=>d.pos));
+  const maxD=d3.max(series,s=>d3.max(s.data,d=>d.depth))||1;
+  const x=d3.scaleLinear().domain([0,maxP]).range([m.l,W-m.r]);
+  const y=(log?d3.scaleLog().domain([1,Math.max(10,maxD)]).clamp(true):d3.scaleLinear().domain([0,maxD]).nice()).range([H-m.b,m.t]);
+  svg.append('g').attr('class','axis').attr('transform',`translate(0,${H-m.b})`).call(d3.axisBottom(x).ticks(8));
+  svg.append('g').attr('class','axis').attr('transform',`translate(${m.l},0)`).call(d3.axisLeft(y).ticks(5));
+  const line=d3.line().x(d=>x(d.pos)).y(d=>y(Math.max(log?1:0,d.depth)));
+  series.forEach(s=>svg.append('path').datum(s.data).attr('fill','none').attr('stroke',colorFor(s.sample)).attr('stroke-width',1.3).attr('opacity',.85).attr('d',line));
+  // depth=10 consensus threshold guide
+  svg.append('line').attr('x1',m.l).attr('x2',W-m.r).attr('y1',y(10)).attr('y2',y(10)).attr('stroke','var(--warn)').attr('stroke-dasharray','4 3').attr('opacity',.6);
+  svg.append('text').attr('x',W-m.r).attr('y',y(10)-4).attr('text-anchor','end').attr('fill','var(--warn)').attr('font-size',10).text('consensus min-depth 10×');
+  const lg=d3.select('#cLegend'); lg.selectAll('*').remove();
+  series.forEach(s=>lg.append('span').html(`<span class="sw" style="background:${colorFor(s.sample)}"></span>${s.sample}`));
+}
+function downsample(arr,n){if(arr.length<=n)return arr;const step=arr.length/n,out=[];for(let i=0;i<n;i++)out.push(arr[Math.floor(i*step)]);return out;}
+
+/* ============================ Phylogeny ============================ */
+function renderPhylo(){
+  const el=document.getElementById('phylo');
+  const segs=Object.keys(S.trees);
+  if(!segs.length){el.innerHTML='<div class="empty">Upload IQ-TREE <code>*.treefile</code> files (one per segment) to view trees. Add a metadata CSV to color tips.</div>';return;}
+  el.innerHTML=`<div class="card"><h3>Per-segment maximum-likelihood phylogeny</h3>
+    <div class="controls">Segment <select id="pSeg"></select>
+      ${S.metaCols.length?`Color by <select id="pColor"><option value="">— none —</option>${S.metaCols.map(c=>`<option>${c}</option>`).join('')}</select>`:''}
+      <label><input id="pSupport" type="checkbox" checked/> show support</label></div>
+    <div id="pPlot"></div><div id="pLegend" class="legend"></div></div>`;
+  const segSel=document.getElementById('pSeg'); segs.sort().forEach(s=>segSel.add(new Option(s,s)));
+  const upd=()=>drawTree(segSel.value, document.getElementById('pColor')?document.getElementById('pColor').value:'', document.getElementById('pSupport').checked);
+  segSel.onchange=upd; if(document.getElementById('pColor'))document.getElementById('pColor').onchange=upd;
+  document.getElementById('pSupport').onchange=upd; upd();
+}
+// minimal Newick parser -> {name,length,children[]}
+function parseNewick(s){
+  let i=0; function node(){const n={children:[]};
+    if(s[i]==='('){ i++; do{ n.children.push(node()); }while(s[i++]===','); /* consumes ) */ }
+    let lab=''; while(i<s.length&&!'():,;'.includes(s[i])) lab+=s[i++];
+    if(s[i]===':'){i++;let num='';while(i<s.length&&!'():,;'.includes(s[i]))num+=s[i++];n.length=+num;}
+    if(n.children.length){ n.support=lab?+lab:null; } else { n.name=lab; }
+    return n;}
+  const root=node(); return root;
+}
+function metaColor(){ // build a color map for the active metadata column
+  return {};
+}
+function drawTree(seg,colorCol,showSupport){
+  const wrap=d3.select('#pPlot'); wrap.selectAll('*').remove();
+  let rootData; try{ rootData=parseNewick(S.trees[seg]); }catch(e){ wrap.append('div').attr('class','empty').text('Could not parse this tree.'); return; }
+  const root=d3.hierarchy(rootData,d=>d.children);
+  const leaves=root.leaves().length;
+  const W=wrap.node().clientWidth||820, H=Math.max(240, leaves*22+40), m={t:14,r:150,b:14,l:14};
+  // cumulative branch lengths for x; fall back to depth if no lengths
+  let hasLen=false; root.each(d=>{ if(d.data.length!=null) hasLen=true; });
+  root.eachBefore(d=>{ d.x0=(d.parent?d.parent.x0:0)+(hasLen?(d.data.length||0):1); });
+  const maxX=d3.max(root.descendants(),d=>d.x0)||1;
+  const cluster=d3.cluster().size([H-m.t-m.b, W-m.l-m.r]); cluster(root);
+  const x=d3.scaleLinear().domain([0,maxX]).range([0,W-m.l-m.r]);
+  const svg=wrap.append('svg').attr('width',W).attr('height',H).append('g').attr('transform',`translate(${m.l},${m.t})`);
+  // color scale
+  let cmap=null,cats=[];
+  if(colorCol){ cats=[...new Set(root.leaves().map(l=>{const mm=S.meta[l.data.name]||S.meta[sampleKey(l.data.name)]||{};return mm[colorCol]||'n/a';}))];
+    cmap=d3.scaleOrdinal().domain(cats).range(palette); }
+  // links (rectangular)
+  svg.selectAll('path.link').data(root.links()).join('path').attr('class','link').attr('fill','none')
+    .attr('stroke','var(--line)').attr('stroke-width',1.2)
+    .attr('d',d=>`M${x(d.source.x0)},${d.source.x} V${d.target.x} H${x(d.target.x0)}`);
+  // support labels
+  if(showSupport) svg.selectAll('text.sup').data(root.descendants().filter(d=>d.children&&d.data.support!=null)).join('text')
+    .attr('class','sup').attr('x',d=>x(d.x0)+3).attr('y',d=>d.x-2).attr('font-size',9).attr('fill','var(--muted)').text(d=>d.data.support);
+  // leaf tips
+  const tip=svg.selectAll('g.tip').data(root.leaves()).join('g').attr('class','tip').attr('transform',d=>`translate(${x(d.x0)},${d.x})`);
+  tip.append('circle').attr('r',4).attr('fill',d=>{ if(!cmap)return 'var(--accent)';
+    const mm=S.meta[d.data.name]||S.meta[sampleKey(d.data.name)]||{}; return cmap(mm[colorCol]||'n/a'); });
+  tip.append('text').attr('x',8).attr('y',3).attr('font-size',11).attr('fill','var(--ink)').text(d=>d.data.name);
+  const lg=d3.select('#pLegend'); lg.selectAll('*').remove();
+  if(cmap) cats.forEach(c=>lg.append('span').html(`<span class="sw" style="background:${cmap(c)}"></span>${c}`));
+  else lg.append('span').text(`${leaves} tips${hasLen?'':' — no branch lengths, showing topology'}`);
+}
+function sampleKey(tipName){ // tip like "R3D706_NC_014395_S" -> "R3D706"
+  return tipName.split('_')[0];
+}
+</script>
+</body>
+</html>
