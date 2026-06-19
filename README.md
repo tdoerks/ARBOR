@@ -28,6 +28,11 @@
 
 ## Usage
 
+> [!TIP]
+> **Running on KSU Beocat?** Follow the step-by-step [**Beocat User Guide**](docs/beocat_user_guide.md) —
+> upload reads, build the samplesheet, `sbatch`, done. The RVFV reference, primers and segments are
+> bundled defaults. A ready run kit is in [`tests/beocat/`](tests/beocat/).
+
 > [!NOTE]
 > If you are new to Nextflow and nf-core, please refer to [this page](https://nf-co.re/docs/get_started/environment_setup/overview) on how to set-up Nextflow. Make sure to [test your setup](https://nf-co.re/docs/get_started/run-your-first-pipeline) with `-profile test` before running the workflow on actual data.
 
