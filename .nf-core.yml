@@ -6,6 +6,9 @@ lint:
   # nf-core 4.0.2 bug: these two sub-tests crash with an uncaught JSONDecodeError
   files_unchanged: false
   container_configs: false
+  # false positive: the bowtie2 test snapshot contains a SAM Phred quality string of '<' chars
+  merge_markers:
+    - modules/nf-core/bowtie2/align/tests/main.nf.test.snap
   nextflow_config:
     - manifest.name
     - manifest.homePage

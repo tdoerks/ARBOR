@@ -21,7 +21,7 @@ include { IVAR_CONSENSUS                      } from '../modules/nf-core/ivar/co
 include { LOFREQ_INDELQUAL                    } from '../modules/nf-core/lofreq/indelqual/main'
 include { LOFREQ_CALL                         } from '../modules/nf-core/lofreq/call/main'
 include { LOFREQ_FILTER                       } from '../modules/nf-core/lofreq/filter/main'
-include { CAT_CAT                             } from '../modules/nf-core/cat/cat/main'
+include { FIND_CONCATENATE                    } from '../modules/nf-core/find/concatenate/main'
 include { MAFFT_ALIGN                         } from '../modules/nf-core/mafft/align/main'
 include { IQTREE                              } from '../modules/nf-core/iqtree/main'
 include { MULTIQC                             } from '../modules/nf-core/multiqc/main'
@@ -142,9 +142,9 @@ workflow ARBOR {
             .map { meta, fa -> [ meta.segment, fa ] }
             .groupTuple()
             .map { seg, fas -> [ [ id:seg ], fas ] }
-        CAT_CAT(ch_seg_consensus)
+        FIND_CONCATENATE(ch_seg_consensus)
         // MSA per segment, folding in optional external reference strains via MAFFT --add
-        MAFFT_ALIGN(CAT_CAT.out.file_out, ch_context, [[],[]], [[],[]], [[],[]], [[],[]], false)
+        MAFFT_ALIGN(FIND_CONCATENATE.out.file_out, ch_context, [[],[]], [[],[]], [[],[]], [[],[]], false)
         // ML tree per segment
         IQTREE(MAFFT_ALIGN.out.fas.map { meta, aln -> [ meta, aln, [] ] },
             [], [], [], [], [], [], [], [], [], [], [], [])
