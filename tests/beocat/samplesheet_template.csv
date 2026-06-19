@@ -1,0 +1,17 @@
+sample,fastq_1,fastq_2
+R3D706,/fastscratch/$USER/reads/R3D706_R1_001.fastq.gz,/fastscratch/$USER/reads/R3D706_R2_001.fastq.gz
+R3D709,/fastscratch/$USER/reads/R3D709_R1_001.fastq.gz,/fastscratch/$USER/reads/R3D709_R2_001.fastq.gz
+R3D710,/fastscratch/$USER/reads/R3D710_R1_001.fastq.gz,/fastscratch/$USER/reads/R3D710_R2_001.fastq.gz
+R3D717,/fastscratch/$USER/reads/R3D717_R1_001.fastq.gz,/fastscratch/$USER/reads/R3D717_R2_001.fastq.gz
+R3D720,/fastscratch/$USER/reads/R3D720_R1_001.fastq.gz,/fastscratch/$USER/reads/R3D720_R2_001.fastq.gz
+R3D1417,/fastscratch/$USER/reads/R3D1417_R1_001.fastq.gz,/fastscratch/$USER/reads/R3D1417_R2_001.fastq.gz
+R3D1419,/fastscratch/$USER/reads/R3D1419_R1_001.fastq.gz,/fastscratch/$USER/reads/R3D1419_R2_001.fastq.gz
+R3D1420,/fastscratch/$USER/reads/R3D1420_R1_001.fastq.gz,/fastscratch/$USER/reads/R3D1420_R2_001.fastq.gz
+R3D307,/fastscratch/$USER/reads/R3D307_R1_001.fastq.gz,/fastscratch/$USER/reads/R3D307_R2_001.fastq.gz
+R3D310,/fastscratch/$USER/reads/R3D310_R1_001.fastq.gz,/fastscratch/$USER/reads/R3D310_R2_001.fastq.gz
+R3D312,/fastscratch/$USER/reads/R3D312_R1_001.fastq.gz,/fastscratch/$USER/reads/R3D312_R2_001.fastq.gz
+R3D318,/fastscratch/$USER/reads/R3D318_R1_001.fastq.gz,/fastscratch/$USER/reads/R3D318_R2_001.fastq.gz
+R3D319,/fastscratch/$USER/reads/R3D319_R1_001.fastq.gz,/fastscratch/$USER/reads/R3D319_R2_001.fastq.gz
+R2D701,/fastscratch/$USER/reads/R2D701_R1_001.fastq.gz,/fastscratch/$USER/reads/R2D701_R2_001.fastq.gz
+R2D704,/fastscratch/$USER/reads/R2D704_R1_001.fastq.gz,/fastscratch/$USER/reads/R2D704_R2_001.fastq.gz
+R2D706,/fastscratch/$USER/reads/R2D706_R1_001.fastq.gz,/fastscratch/$USER/reads/R2D706_R2_001.fastq.gz
