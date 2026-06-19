@@ -25,27 +25,25 @@ export NXF_HOME="$PWD/.nextflow_home"
 export NXF_VER=26.04.3
 mkdir -p "$NXF_SINGULARITY_CACHEDIR" "$NXF_HOME"
 
-# Environment. Beocat's bundled `Nextflow` module is a SELF-CONTAINED 24.04.2 that ignores
-# NXF_VER and is too old for ARBOR's current nf-core modules (they need Nextflow >= 25.10).
-# Load Singularity + Java + (for its Java dependency) the Nextflow module, then below we fall
-# back to a standalone launcher if the available Nextflow is < 25.
+# Environment.
+#  - Beocat's Nextflow modules are only 23.10 / 24.04 — both too old for ARBOR's current nf-core
+#    modules (need >= 25.10) AND they pin Java 11. So we DON'T load the Nextflow module.
+#  - Instead: load Java 17+ (Nextflow 26 needs Java 17-26; Beocat default is Java 11) and use a
+#    standalone Nextflow launcher (honors NXF_VER=26.04.3, uses the Java 17 we load here).
 module load Singularity 2>/dev/null || module load singularity 2>/dev/null || true
-module load OpenJDK     2>/dev/null || module load Java 2>/dev/null || true
-module load Nextflow    2>/dev/null || module load nextflow 2>/dev/null || true
+module load Java/17.0.15 2>/dev/null || module load Java/23.0.2 2>/dev/null \
+    || module load Java/17 2>/dev/null || true
 
-# Decide which nextflow to use: prefer one >= 25; otherwise install a standalone launcher
-# into scratch (the standalone launcher DOES honor NXF_VER and will run 26.04.3).
-NF=nextflow
-cur="$(nextflow -version 2>/dev/null | grep -oiE 'version [0-9]+' | grep -oE '[0-9]+' | head -1 || true)"
-if [ -z "${cur:-}" ] || [ "${cur:-0}" -lt 25 ]; then
-    echo "Available Nextflow is '${cur:-none}' (< 25) — installing standalone ${NXF_VER} into scratch..."
-    [ -x "$PWD/nextflow" ] || curl -s https://get.nextflow.io | bash
-    NF="$PWD/nextflow"
+NF="$PWD/nextflow"
+if [ ! -x "$NF" ]; then
+    echo "Installing standalone Nextflow ${NXF_VER} into scratch..."
+    curl -s https://get.nextflow.io | bash
 fi
 
-echo "== Nextflow version in use =="
+echo "== Java + Nextflow in use (need Java 17+, Nextflow 26.04.3) =="
+java -version 2>&1 | head -1 || true
 "$NF" -version 2>&1 | grep -i version || true
-echo "============================="
+echo "============================================================="
 
 # Run the LOCAL clone (two dirs up) so your `git pull` always takes effect — no remote-cache staleness.
 REPO_ROOT="$(cd "$SLURM_SUBMIT_DIR/../.." && pwd)"
