@@ -16,9 +16,9 @@
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 
-# keep caches on scratch
+# keep caches on scratch; reuse a shared per-user image cache so containers aren't re-pulled
 export NXF_WORK="$PWD/work"
-export NXF_SINGULARITY_CACHEDIR="$PWD/singularity_cache"
+export NXF_SINGULARITY_CACHEDIR="/fastscratch/$USER/singularity_cache"
 export NXF_HOME="$PWD/.nextflow_home"
 mkdir -p "$NXF_SINGULARITY_CACHEDIR" "$NXF_HOME"
 
