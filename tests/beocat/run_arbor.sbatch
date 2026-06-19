@@ -29,6 +29,11 @@ export NXF_VER=26.04.3
 module load Nextflow   2>/dev/null || module load nextflow   2>/dev/null || true
 module load Singularity 2>/dev/null || module load singularity 2>/dev/null || true
 
+# show what we're actually running (should report 26.04.3, NOT 24.04.2)
+echo "== Nextflow version in use =="
+nextflow -version 2>&1 | grep -i version || true
+echo "============================="
+
 nextflow run tdoerks/ARBOR -r main -profile beocat \
     --input   samplesheet.csv \
     --outdir  results \
