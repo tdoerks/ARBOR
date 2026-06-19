@@ -22,6 +22,10 @@ export NXF_SINGULARITY_CACHEDIR="$PWD/singularity_cache"
 export NXF_HOME="$PWD/.nextflow_home"
 mkdir -p "$NXF_SINGULARITY_CACHEDIR" "$NXF_HOME"
 
+# Pin a Nextflow >= 24.10 — current nf-core modules don't parse on older runtimes
+# (Beocat's module default may be 24.04.x). Nextflow self-downloads this version.
+export NXF_VER=26.04.3
+
 module load Nextflow   2>/dev/null || module load nextflow   2>/dev/null || true
 module load Singularity 2>/dev/null || module load singularity 2>/dev/null || true
 
