@@ -1,0 +1,32 @@
+repository_type: pipeline
+
+nf_core_version: 4.0.2
+
+lint:
+  # nf-core 4.0.2 bug: these two sub-tests crash with an uncaught JSONDecodeError
+  files_unchanged: false
+  container_configs: false
+  nextflow_config:
+    - manifest.name
+    - manifest.homePage
+  multiqc_config:
+    - report_comment
+  files_exist:
+    - CODE_OF_CONDUCT.md
+    - assets/nf-core-arbor_logo_light.png
+    - docs/images/nf-core-arbor_logo_light.png
+    - docs/images/nf-core-arbor_logo_dark.png
+    - .github/ISSUE_TEMPLATE/config.yml
+    - .github/workflows/awstest.yml
+    - .github/workflows/awsfulltest.yml
+
+template:
+  org: tdoerks
+  name: arbor
+  description: 'Viral tiling-amplicon pipeline: primer-trimmed mapping, low-frequency
+    variants, per-segment consensus and phylogeny'
+  author: tdoerks
+  version: 1.0.0dev
+  force: true
+  outdir: arbor
+  is_nfcore: false
