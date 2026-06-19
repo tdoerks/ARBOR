@@ -11,6 +11,12 @@ echo "sample,fastq_1,fastq_2"
 shopt -s nullglob
 declare -A seen
 for r1 in "$dir"/*_R1_001.fastq.gz; do
+    base0=$(basename "$r1")
+    # skip BCLConvert's Undetermined (unassigned barcodes) — not a real sample
+    if [[ "$base0" == Undetermined_* ]]; then
+        echo "INFO: skipping $base0 (unassigned reads)" >&2
+        continue
+    fi
     r2=${r1/_R1_001/_R2_001}
     if [[ ! -e "$r2" ]]; then
         echo "WARN: no R2 mate for $r1 — skipping" >&2
