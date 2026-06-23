@@ -66,6 +66,25 @@ nextflow run tdoerks/arbor \
 > [!WARNING]
 > Please provide pipeline parameters via the CLI or Nextflow `-params-file` option. Custom config files including those provided by the `-c` Nextflow option can be used to provide any configuration _**except for parameters**_; see [docs](https://nf-co.re/docs/running/run-pipelines#using-parameter-files).
 
+## Results dashboard
+
+Alongside the MultiQC report, ARBOR publishes a single, self-contained, **pre-filled** results
+dashboard at `<outdir>/dashboard/arbor_dashboard.html` — just download that one file and open it
+in a browser (no server, no uploads). It embeds the run's results directly and presents a
+MultiQC-style **General Statistics** heatmap (reads, % mapped, mean depth and % ≥10× per segment,
+PASS variant counts) plus per-segment iSNV, coverage, and phylogeny views.
+
+### Optional metadata columns
+
+The samplesheet accepts three **optional** extra columns — `host`, `date`, `location` — that flow
+through to colour the dashboard's phylogeny tips. Existing three-column samplesheets keep working
+unchanged.
+
+```csv
+sample,fastq_1,fastq_2,host,date,location
+R3D710,R3D710_R1.fastq.gz,R3D710_R2.fastq.gz,bovine,2026-03,KS
+```
+
 ## Credits
 
 tdoerks/arbor was originally written by tdoerks.

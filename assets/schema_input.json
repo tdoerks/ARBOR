@@ -26,6 +26,21 @@
                 "exists": true,
                 "pattern": "^([\\S\\s]*\\/)?[^\\s\\/]+\\.f(ast)?q\\.gz$",
                 "errorMessage": "FastQ file for reads 2 must be provided (paired-end only), cannot contain spaces and must have extension '.fq.gz' or '.fastq.gz'"
+            },
+            "host": {
+                "type": "string",
+                "meta": ["host"],
+                "errorMessage": "Optional host/source (e.g. bovine) — used to colour the dashboard phylogeny tips"
+            },
+            "date": {
+                "type": "string",
+                "meta": ["date"],
+                "errorMessage": "Optional collection date (e.g. 2026-03) — used to colour the dashboard phylogeny tips"
+            },
+            "location": {
+                "type": "string",
+                "meta": ["location"],
+                "errorMessage": "Optional collection location (e.g. KS) — used to colour the dashboard phylogeny tips"
             }
         },
         "required": ["sample", "fastq_1", "fastq_2"]
