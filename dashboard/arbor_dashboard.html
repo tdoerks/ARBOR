@@ -8,8 +8,10 @@
 <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
 <style>
   :root{
-    --bg:#0f1419; --panel:#1a2129; --panel2:#222b35; --ink:#e6edf3; --muted:#8b97a6;
-    --accent:#3fb984; --accent2:#4aa3df; --warn:#e0a458; --bad:#e06c75; --line:#2b3642;
+    /* MultiQC-inspired light theme */
+    --bg:#ffffff; --panel:#ffffff; --panel2:#f7f9fb; --ink:#343a40; --muted:#868e96;
+    --accent:#0a9396; --accent2:#1ca8dd; --warn:#e0a458; --bad:#dc3545; --line:#e3e6ea;
+    --header:#0b6e75;
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
@@ -58,8 +60,12 @@
 </head>
 <body>
 <header>
-  <h1>🌳 ARBOR <span class="tag">Amplicon Reconstruction, Bootstrapping &amp; Outbreak Resolution — results dashboard</span></h1>
+  <h1>🌳 ARBOR <span class="tag">Amplicon Reconstruction, Bootstrapping &amp; Outbreak Resolution — results dashboard</span>
+    <span id="prefilled-note" class="tag" style="display:none;color:var(--accent);font-weight:600">● pre-filled from pipeline run</span></h1>
 </header>
+<!-- The ARBOR_DASHBOARD pipeline step injects the run's results into the script tag below.
+     Left untouched, the dashboard stays a drag-and-drop template. -->
+<script id="arbor-embedded" type="application/json">__ARBOR_EMBEDDED_DATA__</script>
 <main>
   <div id="drop" class="drop">
     <b>Drop ARBOR result files here</b> (or click to choose) — iVar <code>*.tsv</code>, LoFreq <code>*.vcf[.gz]</code>,
@@ -85,7 +91,8 @@
 /* ============================ state ============================ */
 const S = {
   variants: {},   // sample -> [ {region,pos,ref,alt,freq,depth,pass,caller} ]
-  cov: {},        // sample -> { perbase: {seg:[{pos,depth}]}, summary: {seg:{mean,length}} }
+  cov: {},        // sample -> { perbase: {seg:[{pos,depth}]}, summary: {seg:{mean,length}}, breadth: {seg:fracGE10} }
+  qc: {},         // sample -> { reads, pctPass, pctMapped }
   trees: {},      // segment -> newick string
   meta: {},       // sample -> {col:val}
   metaCols: [],
@@ -101,26 +108,41 @@ fileInput.onchange=e=>handleFiles(e.target.files);
 ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('hover')}));
 drop.addEventListener('drop',e=>handleFiles(e.dataTransfer.files));
 
-function sampleFromName(n){ return n.replace(/\.(tsv|vcf|gz|txt|bed|treefile|nwk|csv|filtered)/gi,'')
-  .replace(/[._](ivar|lofreq|variants|filtered|mosdepth|per-base|summary|consensus)/gi,'')
+function sampleFromName(n){ return n.replace(/\.(tsv|vcf|gz|txt|bed|treefile|nwk|csv|filtered|json|stats)/gi,'')
+  .replace(/[._](ivar|lofreq|variants|filtered|mosdepth|per-base|summary|consensus|fastp|flagstat)/gi,'')
   .replace(/_S\d+_L\d+.*/,''); }
 
+// One dispatch shared by drag-drop (File objects) and embedded data (shim objects).
+async function routeFile(name, source){
+  const low=name.toLowerCase();
+  if(low.endsWith('.gz') && low.includes('per-base')) await readCov(source,true);
+  else if(low.includes('summary')&&low.endsWith('.txt')) await readMosSummary(source);
+  else if(low.includes('per-base')&&low.endsWith('.bed')) await readCov(source,false);
+  else if(low.endsWith('.json')) await readFastp(source);
+  else if(low.endsWith('.stats')) await readSamtoolsStats(source);
+  else if(low.endsWith('.tsv')) await readIvar(source);
+  else if(low.endsWith('.vcf')||low.endsWith('.vcf.gz')) await readVcf(source,low.endsWith('.gz'));
+  else if(low.endsWith('.treefile')||low.endsWith('.nwk')||low.endsWith('.nexus')) await readTree(source);
+  else if(low.endsWith('.csv')) await readMeta(source);
+}
 async function handleFiles(list){
   for(const f of list){
-    const name=f.name, low=name.toLowerCase();
-    try{
-      if(low.endsWith('.gz') && low.includes('per-base')) await readCov(f,true);
-      else if(low.includes('summary')&&low.endsWith('.txt')) await readMosSummary(f);
-      else if(low.includes('per-base')&&low.endsWith('.bed')) await readCov(f,false);
-      else if(low.endsWith('.tsv')) await readIvar(f);
-      else if(low.endsWith('.vcf')||low.endsWith('.vcf.gz')) await readVcf(f,low.endsWith('.gz'));
-      else if(low.endsWith('.treefile')||low.endsWith('.nwk')||low.endsWith('.nexus')) await readTree(f);
-      else if(low.endsWith('.csv')) await readMeta(f);
-    }catch(err){ console.error('failed',name,err); }
+    try{ await routeFile(f.name, f); }
+    catch(err){ console.error('failed',f.name,err); }
   }
   renderChips(); renderAll();
 }
-const readText=(f,gz)=>new Promise((res,rej)=>{const r=new FileReader();
+// readText accepts either a File (drag-drop) or an embedded shim {_embedded,name,text|bytes}.
+const readText=(f,gz)=>new Promise((res,rej)=>{
+  if(f && f._embedded){
+    try{
+      if(gz) res(pako.ungzip(f.bytes,{to:'string'}));
+      else if(f.text!=null) res(f.text);
+      else res(new TextDecoder().decode(f.bytes));
+    }catch(e){ rej(e); }
+    return;
+  }
+  const r=new FileReader();
   r.onload=()=>{ try{ res(gz?pako.ungzip(new Uint8Array(r.result),{to:'string'}):r.result);}catch(e){rej(e)} };
   r.onerror=rej; gz?r.readAsArrayBuffer(f):r.readAsText(f);});
 
@@ -151,7 +173,7 @@ async function readVcf(f,gz){
 function dp4af(s){const p=s.split(',').map(Number);const r=p[0]+p[1],a=p[2]+p[3];return a/(r+a||1);}
 async function readMosSummary(f){
   const txt=await readText(f,false); const samp=sampleFromName(f.name);
-  S.cov[samp]=S.cov[samp]||{perbase:{},summary:{}};
+  S.cov[samp]=S.cov[samp]||{perbase:{},summary:{},breadth:{}};
   for(const ln of txt.trim().split(/\r?\n/)){const c=ln.split('\t');
     if(c[0]==='chrom'||/_region$/.test(c[0])||c[0]==='total')continue;
     if(c.length>=4&&!isNaN(+c[3])){S.cov[samp].summary[c[0]]={length:+c[1],mean:+c[3]};S.segments.add(c[0]);}}
@@ -159,12 +181,36 @@ async function readMosSummary(f){
 }
 async function readCov(f,gz){
   const txt=await readText(f,gz); const samp=sampleFromName(f.name);
-  S.cov[samp]=S.cov[samp]||{perbase:{},summary:{}};
+  S.cov[samp]=S.cov[samp]||{perbase:{},summary:{},breadth:{}};
   const pb=S.cov[samp].perbase;
+  const tot={}, ge10={};   // per-segment base totals for breadth (% >=10x)
   for(const ln of txt.split(/\r?\n/)){ if(!ln)continue; const c=ln.split('\t'); if(c.length<4)continue;
     const seg=c[0],s=+c[1],e=+c[2],d=+c[3]; (pb[seg]=pb[seg]||[]);
     // store midpoint to keep it light; downsample handled at render
-    pb[seg].push({pos:Math.floor((s+e)/2),depth:d}); S.segments.add(seg);}
+    pb[seg].push({pos:Math.floor((s+e)/2),depth:d}); S.segments.add(seg);
+    const span=e-s; tot[seg]=(tot[seg]||0)+span; if(d>=10) ge10[seg]=(ge10[seg]||0)+span;}
+  S.cov[samp].breadth=S.cov[samp].breadth||{};
+  for(const seg of Object.keys(tot)) S.cov[samp].breadth[seg]= tot[seg]? (ge10[seg]||0)/tot[seg] : 0;
+  S.samples.add(samp);
+}
+async function readFastp(f){
+  const txt=await readText(f,false); let j; try{ j=JSON.parse(txt);}catch(e){ return; } // not fastp json
+  if(!j.summary) return;
+  const samp=sampleFromName(f.name);
+  const before=(j.summary.before_filtering||{}).total_reads||0;
+  const after=(j.summary.after_filtering||{}).total_reads||0;
+  S.qc[samp]=S.qc[samp]||{}; S.qc[samp].reads=before; S.qc[samp].pctPass=before? after/before:NaN;
+  S.samples.add(samp);
+}
+async function readSamtoolsStats(f){
+  const txt=await readText(f,false); const samp=sampleFromName(f.name);
+  let total=NaN, mapped=NaN;
+  for(const ln of txt.split(/\r?\n/)){ if(ln[0]!=='S'||!ln.startsWith('SN'))continue;
+    const m=ln.match(/^SN\s+([^:]+):\s+(\d+)/); if(!m)continue;
+    if(m[1]==='raw total sequences') total=+m[2];
+    else if(m[1]==='reads mapped') mapped=+m[2]; }
+  if(isNaN(total)) return;  // not a samtools stats file
+  S.qc[samp]=S.qc[samp]||{}; S.qc[samp].pctMapped= total? mapped/total:NaN;
   S.samples.add(samp);
 }
 async function readTree(f){
@@ -202,26 +248,56 @@ const segList=()=>[...S.segments].filter(s=>!Object.keys(S.trees).includes(s)||t
 const sampList=()=>[...S.samples].sort();
 
 /* ============================ Run summary ============================ */
+let gsSort={key:null,dir:1};
+function shortSeg(seg){ const m=seg.match(/_(S|M|L)$/i); return m?m[1].toUpperCase():seg; }
 function renderSummary(){
   const el=document.getElementById('summary');
   if(!S.samples.size){el.innerHTML='<div class="empty">Upload result files to populate the summary.</div>';return;}
   const segs=[...S.segments].sort();
-  let kpi=`<div class="kpi">
-    <div class="box"><div class="n">${S.samples.size}</div><div class="l">Samples</div></div>
+  const all=sampList();
+  const kpi=`<div class="kpi">
+    <div class="box"><div class="n">${all.length}</div><div class="l">Samples</div></div>
     <div class="box"><div class="n">${segs.length}</div><div class="l">Segments</div></div>
     <div class="box"><div class="n">${Object.values(S.variants).reduce((a,v)=>a+v.filter(x=>x.pass).length,0)}</div><div class="l">PASS variants</div></div>
     <div class="box"><div class="n">${Object.keys(S.trees).length}</div><div class="l">Trees</div></div></div>`;
-  let rows=sampList().map(s=>{
-    const v=(S.variants[s]||[]); const pass=v.filter(x=>x.pass).length;
-    const cov=S.cov[s]?S.cov[s].summary:{};
-    const covCells=segs.map(seg=>{const m=cov[seg]?cov[seg].mean:null;
-      return `<td>${m==null?'<span class="empty" style="padding:0">—</span>':m.toFixed(0)+'×'}</td>`;}).join('');
-    const m=S.meta[s]||{}; const metaCells=S.metaCols.map(c=>`<td>${m[c]||''}</td>`).join('');
-    return `<tr><td><b>${s}</b></td><td>${pass}</td>${covCells}${metaCells}</tr>`;
-  }).join('');
-  const head=`<tr><th>Sample</th><th>PASS variants</th>${segs.map(s=>`<th>${s} cov</th>`).join('')}${S.metaCols.map(c=>`<th>${c}</th>`).join('')}</tr>`;
+
+  // --- General Statistics columns, built only for data that is present ---
+  const passVar=s=>(S.variants[s]||[]).filter(x=>x.pass).length;
+  const qc=s=>S.qc[s]||{};
+  const meanDep=(s,seg)=>{const c=S.cov[s];return c&&c.summary[seg]?c.summary[seg].mean:null;};
+  const breadth=(s,seg)=>{const c=S.cov[s];return c&&c.breadth&&c.breadth[seg]!=null?c.breadth[seg]*100:null;};
+  const cols=[];
+  const push=(label,get,fmt,interp)=>{ if(all.some(s=>get(s)!=null)) cols.push({label,get,fmt,interp}); };
+  push('M reads', s=>qc(s).reads!=null?qc(s).reads/1e6:null, v=>v.toFixed(2), d3.interpolateBuGn);
+  push('% pass',  s=>qc(s).pctPass!=null&&!isNaN(qc(s).pctPass)?qc(s).pctPass*100:null, v=>v.toFixed(1), d3.interpolateGreens);
+  push('% mapped',s=>qc(s).pctMapped!=null&&!isNaN(qc(s).pctMapped)?qc(s).pctMapped*100:null, v=>v.toFixed(1), d3.interpolateGreens);
+  segs.forEach(seg=>push(`${shortSeg(seg)} depth`, s=>meanDep(s,seg), v=>Math.round(v)+'×', d3.interpolateBlues));
+  segs.forEach(seg=>push(`${shortSeg(seg)} ≥10×`, s=>breadth(s,seg), v=>v.toFixed(0)+'%', d3.interpolatePuBu));
+  if(Object.keys(S.variants).length) push('PASS vars', s=>passVar(s), v=>String(v), d3.interpolateOranges);
+  cols.forEach(c=>{ const vals=all.map(c.get).filter(v=>v!=null); c.min=Math.min(...vals); c.max=Math.max(...vals); });
+
+  // sort order
+  let samples=all.slice();
+  if(gsSort.key!=null){
+    if(gsSort.key==='sample') samples.sort((a,b)=>a<b?-1:a>b?1:0);
+    else { const c=cols[gsSort.key]; if(c) samples.sort((a,b)=>{const va=c.get(a),vb=c.get(b);
+      if(va==null&&vb==null)return 0; if(va==null)return 1; if(vb==null)return -1; return va-vb;}); }
+    if(gsSort.dir<0) samples.reverse();
+  }
+
+  const cell=(c,s)=>{ const v=c.get(s); if(v==null) return `<td class="muted" style="color:var(--muted)">—</td>`;
+    const t=c.max>c.min?(v-c.min)/(c.max-c.min):0.5;
+    return `<td style="background:${c.interp(0.1+0.62*t)}">${c.fmt(v)}</td>`; };
+  const head=`<tr><th data-k="sample">Sample</th>${cols.map((c,i)=>`<th data-k="${i}">${c.label}</th>`).join('')}${S.metaCols.map(c=>`<th>${c}</th>`).join('')}</tr>`;
+  const body=samples.map(s=>{ const m=S.meta[s]||{};
+    const metaCells=S.metaCols.map(c=>`<td>${m[c]||''}</td>`).join('');
+    return `<tr><td><b>${s}</b></td>${cols.map(c=>cell(c,s)).join('')}${metaCells}</tr>`; }).join('');
   el.innerHTML=`<div class="card"><h3>Run overview</h3>${kpi}</div>
-    <div class="card"><h3>Per-sample summary</h3><div class="scroll"><table><thead>${head}</thead><tbody>${rows}</tbody></table></div></div>`;
+    <div class="card"><h3>General Statistics</h3>
+      <div class="controls">Per-column heatmap — deeper color = higher value. Click a header to sort.</div>
+      <div class="scroll"><table id="gsTable"><thead>${head}</thead><tbody>${body}</tbody></table></div></div>`;
+  el.querySelectorAll('#gsTable thead th').forEach(th=>{ const k=th.dataset.k; if(k==null)return;
+    th.onclick=()=>{ const key=k==='sample'?'sample':+k; gsSort.dir=(gsSort.key===key?-gsSort.dir:1); gsSort.key=key; renderSummary(); }; });
 }
 
 /* ============================ Variants ============================ */
@@ -393,6 +469,33 @@ function drawTree(seg,colorCol,showSupport){
 function sampleKey(tipName){ // tip like "R3D706_NC_014395_S" -> "R3D706"
   return tipName.split('_')[0];
 }
+
+/* ============================ embedded-data bootstrap ============================ */
+function b64ToBytes(b64){ const bin=atob(b64); const u=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i); return u; }
+async function loadEmbedded(){
+  const el=document.getElementById('arbor-embedded'); if(!el) return false;
+  const raw=(el.textContent||'').trim();
+  if(!raw || raw.indexOf('__ARBOR_EMBEDDED')===0) return false;   // unfilled template -> drag-drop mode
+  let data; try{ data=JSON.parse(raw); }catch(e){ console.error('bad embedded payload',e); return false; }
+  if(!Array.isArray(data)||!data.length) return false;
+  for(const ent of data){
+    try{
+      const src = ent.gz
+        ? {_embedded:true, name:ent.name, bytes:b64ToBytes(ent.b64)}
+        : {_embedded:true, name:ent.name, text:new TextDecoder().decode(b64ToBytes(ent.b64))};
+      await routeFile(ent.name, src);
+    }catch(err){ console.error('embedded parse failed',ent.name,err); }
+  }
+  return true;
+}
+(async()=>{
+  const prefilled=await loadEmbedded();
+  renderChips(); renderAll();
+  if(prefilled){
+    const drop=document.getElementById('drop'); if(drop) drop.style.display='none';
+    const note=document.getElementById('prefilled-note'); if(note) note.style.display='inline';
+  }
+})();
 </script>
 </body>
 </html>

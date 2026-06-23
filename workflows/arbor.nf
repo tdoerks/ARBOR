@@ -25,6 +25,7 @@ include { FIND_CONCATENATE                    } from '../modules/nf-core/find/co
 include { MAFFT_ALIGN                         } from '../modules/nf-core/mafft/align/main'
 include { IQTREE                              } from '../modules/nf-core/iqtree/main'
 include { MULTIQC                             } from '../modules/nf-core/multiqc/main'
+include { ARBOR_DASHBOARD                     } from '../modules/local/arbor_dashboard/main'
 include { paramsSummaryMap       } from 'plugin/nf-schema'
 include { paramsSummaryMultiqc   } from '../subworkflows/nf-core/utils_nfcore_pipeline'
 include { softwareVersionsToYAML } from '../subworkflows/nf-core/utils_nfcore_pipeline'
@@ -49,6 +50,7 @@ workflow ARBOR {
 
     def ch_versions = channel.empty()
     def ch_multiqc_files = channel.empty()
+    def ch_dashboard_files = channel.empty()   // pre-filled ARBOR dashboard inputs (mirrors ch_multiqc_files)
 
     //
     // SHARED REFERENCE — one reference for the whole run, as value channels
@@ -79,6 +81,7 @@ workflow ARBOR {
     // fastp takes [meta, reads, adapter_fasta] (adapter [] = auto-detect Illumina adapters)
     FASTP(ch_samplesheet.map { meta, reads -> [ meta, reads, ch_adapter ] }, false, false, false)
     ch_multiqc_files = ch_multiqc_files.mix(FASTP.out.json.map{ _m, f -> f })
+    ch_dashboard_files = ch_dashboard_files.mix(FASTP.out.json.map{ _m, f -> f })   // reads + % passing filter
 
     //
     // MAP (local) -> sorted BAM -> index for .bai
@@ -105,8 +108,12 @@ workflow ARBOR {
     // post-trim QC
     SAMTOOLS_STATS_TRIM(ch_final, ch_fai_tuple)
     ch_multiqc_files = ch_multiqc_files.mix(SAMTOOLS_STATS_TRIM.out.stats.map{ _m, f -> f })
+    ch_dashboard_files = ch_dashboard_files.mix(SAMTOOLS_STATS_TRIM.out.stats.map{ _m, f -> f })   // % mapped
     MOSDEPTH_TRIM(ch_final.map { m, b, i -> [ m, b, i, [] ] }, ch_ref, [])
     ch_multiqc_files = ch_multiqc_files.mix(MOSDEPTH_TRIM.out.summary_txt.map{ _m, f -> f })
+    // mean depth (summary) + per-base depth/breadth (>=10x) for the dashboard
+    ch_dashboard_files = ch_dashboard_files.mix(MOSDEPTH_TRIM.out.summary_txt.map{ _m, f -> f })
+    ch_dashboard_files = ch_dashboard_files.mix(MOSDEPTH_TRIM.out.per_base_bed.map{ _m, f -> f })
 
     //
     // VARIANTS (whole multi-segment reference)
@@ -115,12 +122,14 @@ workflow ARBOR {
         // ivar/variants: [meta, bam], path fasta, path fai, path gff, val save_mpileup
         IVAR_VARIANTS(ch_final.map { m, b, _i -> [ m, b ] }, ch_ref_fasta, ch_fai_bare, [], false)
         ch_multiqc_files = ch_multiqc_files.mix(IVAR_VARIANTS.out.tsv.map{ _m, f -> f })
+        ch_dashboard_files = ch_dashboard_files.mix(IVAR_VARIANTS.out.tsv.map{ _m, f -> f })   // iSNVs + PASS counts
     }
     if (!params.skip_lofreq) {
         // REVIEW: lofreq indelqual pre-processing before call (recommended for Illumina)
         LOFREQ_INDELQUAL(ch_final.map { m, b, _i -> [ m, b ] }, ch_ref)
         LOFREQ_CALL(LOFREQ_INDELQUAL.out.bam.map { m, b -> [ m, b, [] ] }, ch_ref_fasta)
         LOFREQ_FILTER(LOFREQ_CALL.out.vcf)
+        ch_dashboard_files = ch_dashboard_files.mix(LOFREQ_FILTER.out.vcf.map{ _m, f -> f })   // filtered variant calls
     }
 
     //
@@ -148,6 +157,7 @@ workflow ARBOR {
         // ML tree per segment
         IQTREE(MAFFT_ALIGN.out.fas.map { meta, aln -> [ meta, aln, [] ] },
             [], [], [], [], [], [], [], [], [], [], [], [])
+        ch_dashboard_files = ch_dashboard_files.mix(IQTREE.out.phylogeny.map{ _m, f -> f })   // per-segment ML trees
     }
 
     //
@@ -205,7 +215,21 @@ workflow ARBOR {
             ]
         }
     )
+    //
+    // MODULE: pre-filled ARBOR dashboard (embeds results into a single self-contained HTML)
+    //
+    // metadata CSV from the samplesheet (optional host/date/location columns colour the phylogeny tips)
+    def ch_dashboard_meta = ch_samplesheet
+        .map { meta, _reads -> "${meta.id},${meta.host ?: ''},${meta.date ?: ''},${meta.location ?: ''}" }
+        .collectFile(name: 'arbor_metadata.csv', seed: 'sample,host,date,location', newLine: true, sort: true)
+    ARBOR_DASHBOARD(
+        ch_dashboard_files.collect(),
+        file("${projectDir}/dashboard/arbor_dashboard.html", checkIfExists: true),
+        ch_dashboard_meta
+    )
+
     emit:multiqc_report = MULTIQC.out.report.map { _meta, report -> [report] }.toList() // channel: /path/to/multiqc_report.html
+    dashboard      = ARBOR_DASHBOARD.out.report  // channel: /path/to/arbor_dashboard.html
     versions       = ch_versions                 // channel: [ path(versions.yml) ]
 }
 
