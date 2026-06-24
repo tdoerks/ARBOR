@@ -56,9 +56,7 @@ workflow ARBOR {
     def ch_ref       = channel.value([ [id:'reference'], file(params.reference, checkIfExists:true) ])
     def ch_ref_fasta = file(params.reference, checkIfExists:true)              // bare path (ivar/lofreq)
     def ch_primer_bed = file(params.primer_bed, checkIfExists:true)           // bare path (ivar/trim)
-    def ch_context   = params.context_fasta
-        ? channel.value([ [id:'context'], file(params.context_fasta, checkIfExists:true) ])
-        : channel.value([ [], [] ])
+    // phylogenetic context (outgroup / reference strains) is per-segment — built in the phylogeny block below
     def ch_adapter   = params.adapter_fasta ? file(params.adapter_fasta, checkIfExists:true) : []
 
     BOWTIE2_BUILD(ch_ref)
@@ -127,7 +125,8 @@ workflow ARBOR {
     // PER-SEGMENT CONSENSUS + PHYLOGENY (the fan-out/fan-in — riskiest wiring)
     //
     if (!params.skip_phylogeny) {
-        def ch_seg = channel.fromList(params.segments.tokenize(','))         // e.g. S, M, L
+        def seg_list = params.segments.tokenize(',')                         // e.g. NC_014395_S, ...
+        def ch_seg = channel.fromList(seg_list)
         // REVIEW: segment names MUST match reference FASTA record IDs exactly
         def ch_seg_bam = ch_final.combine(ch_seg)
             .map { meta, bam, bai, seg ->
@@ -143,8 +142,24 @@ workflow ARBOR {
             .groupTuple()
             .map { seg, fas -> [ [ id:seg ], fas ] }
         FIND_CONCATENATE(ch_seg_consensus)
-        // MSA per segment, folding in optional external reference strains via MAFFT --add
-        MAFFT_ALIGN(FIND_CONCATENATE.out.file_out, ch_context, [[],[]], [[],[]], [[],[]], [[],[]], false)
+        // Per-segment phylogenetic context: each segment gets ONLY its own segment's outgroup/reference
+        // strains (S->S.fasta, M->M.fasta, L->L.fasta under --context_dir). A single shared FASTA would
+        // wrongly fold M/L sequences into the S alignment, so context is keyed and joined by segment.
+        // Segments with no matching context file align plain (graceful partial coverage).
+        def ch_context = channel.fromList(seg_list).map { seg ->
+            def suffix = seg.tokenize('_').last()                            // NC_014395_S -> S
+            def f = params.context_dir ? file("${params.context_dir}/${suffix}.fasta") : null
+            ( f && f.exists() ) ? [ seg, [ id:"context_${suffix}" ], f ] : [ seg, [], [] ]
+        }
+        // MSA per segment, folding in the segment's context via MAFFT --add
+        def ch_msa = FIND_CONCATENATE.out.file_out
+            .map { meta, fa -> [ meta.id, meta, fa ] }
+            .join(ch_context, by: 0)                                          // 1:1 on segment id
+            .multiMap { _seg, meta, fa, ctx_meta, ctx_fa ->
+                seqs:    [ meta, fa ]
+                context: [ ctx_meta, ctx_fa ]
+            }
+        MAFFT_ALIGN(ch_msa.seqs, ch_msa.context, [[],[]], [[],[]], [[],[]], [[],[]], false)
         // ML tree per segment
         IQTREE(MAFFT_ALIGN.out.fas.map { meta, aln -> [ meta, aln, [] ] },
             [], [], [], [], [], [], [], [], [], [], [], [])
