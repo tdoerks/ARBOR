@@ -259,8 +259,10 @@
             "type": "string",
             "default": "NC_014395_S,NC_014396_M,NC_014397_L"
         },
-        "context_fasta": {
-            "type": "string"
+        "context_dir": {
+            "type": "string",
+            "format": "directory-path",
+            "description": "Directory of per-segment outgroup/reference FASTAs (S.fasta, M.fasta, L.fasta) folded into each segment's tree via MAFFT --add."
         },
         "adapter_fasta": {
             "type": "string"
