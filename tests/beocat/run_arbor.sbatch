@@ -12,8 +12,11 @@
 #SBATCH --mem=8G
 #SBATCH --time=2-00:00:00
 #SBATCH --output=arbor_head_%j.log
-#SBATCH --mail-type=END,FAIL
-#SBATCH --mail-user=tylerdoe@ksu.edu   # KSU address — Beocat's mail relay delivers reliably here
+# Email notifications (optional): put YOUR KSU address below and uncomment BOTH lines
+# (remove one '#' so each starts with exactly '#SBATCH'). Left off by default so
+# nobody accidentally emails someone else. A KSU address delivers most reliably.
+##SBATCH --mail-type=END,FAIL
+##SBATCH --mail-user=your_eid@ksu.edu
 
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
