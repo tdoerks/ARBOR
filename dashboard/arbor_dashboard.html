@@ -54,6 +54,12 @@
   .sw{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:5px;vertical-align:-1px}
   a.link{color:var(--accent2)}
   code{background:var(--panel2);padding:1px 5px;border-radius:4px;font-size:12px}
+  .banner{border:1px solid var(--line);border-radius:8px;padding:11px 14px;margin-bottom:16px;font-size:13px;background:var(--panel2);color:var(--muted)}
+  .banner.on{border-color:var(--accent);color:var(--ink)}
+  .badge{display:inline-block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;padding:1px 6px;border-radius:10px;margin-left:8px;background:var(--warn);color:#1a2129}
+  tr.changed td{color:var(--warn)}
+  td.desc{white-space:normal;color:var(--muted)}
+  td.val{font-variant-numeric:tabular-nums}
 </style>
 </head>
 <body>
@@ -63,7 +69,8 @@
 <main>
   <div id="drop" class="drop">
     <b>Drop ARBOR result files here</b> (or click to choose) — iVar <code>*.tsv</code>, LoFreq <code>*.vcf[.gz]</code>,
-    mosdepth <code>*.summary.txt</code> / <code>*.per-base.bed.gz</code>, IQ-TREE <code>*.treefile</code>, and a metadata <code>*.csv</code>.
+    mosdepth <code>*.summary.txt</code> / <code>*.per-base.bed.gz</code>, IQ-TREE <code>*.treefile</code>, a metadata <code>*.csv</code>,
+    and the run's <code>pipeline_info/params.json</code>.
     <input id="file" type="file" multiple style="display:none"/>
   </div>
   <div id="loaded" class="loaded"></div>
@@ -73,12 +80,14 @@
     <button data-tab="variants">iSNVs / Variants</button>
     <button data-tab="coverage">Coverage</button>
     <button data-tab="phylo">Phylogeny</button>
+    <button data-tab="params">Parameters</button>
   </nav>
 
   <section id="summary" class="tab active"></section>
   <section id="variants" class="tab"></section>
   <section id="coverage" class="tab"></section>
   <section id="phylo" class="tab"></section>
+  <section id="params" class="tab"></section>
 </main>
 
 <script>
@@ -89,9 +98,64 @@ const S = {
   trees: {},      // segment -> newick string
   meta: {},       // sample -> {col:val}
   metaCols: [],
+  params: null,   // parsed pipeline_info/params.json (values actually used by the run)
   samples: new Set(), segments: new Set(),
 };
 const palette = d3.schemeTableau10.concat(d3.schemeSet3);
+
+/* ============================ pipeline parameters (defaults + docs) ============================
+   Single source of truth for the Parameters tab. Defaults/flags mirror nextflow.config +
+   conf/modules.config. `key` matches the field in pipeline_info/params.json; `flag` is the
+   underlying tool option; `note:true` rows are static explanations (no params.json key). */
+const PARAM_DEFS = [
+  { group:'References & primers', items:[
+    { key:'reference',     flag:'--reference',   def:'assets/rvfv/rvfv_reference.fa',        desc:'Reference FASTA for mapping, variants and consensus.' },
+    { key:'primer_bed',    flag:'-b (ivar trim)',def:'assets/rvfv/rvfv_amplicons_v4.bed',    desc:'Tiling-amplicon primer BED used for primer trimming.' },
+    { key:'segments',      flag:'--segments',    def:'NC_014395_S,NC_014396_M,NC_014397_L',  desc:'Reference record IDs to split by for per-segment consensus/phylogeny.' },
+    { key:'context_fasta', flag:'MAFFT --add',   def:null,                                   desc:'Optional external strains folded into each per-segment alignment/tree.' },
+    { key:'adapter_fasta', flag:'--adapter_fasta',def:null,                                  desc:'Adapter FASTA for fastp; null means auto-detect Illumina adapters.' },
+  ]},
+  { group:'Read trimming (fastp)', items:[
+    { key:'fastp_qualified_quality', flag:'--qualified_quality_phred', def:13, desc:'Per-base quality threshold; bases below count as "unqualified" (CLC Q-limit 0.05 ≈ Q13).' },
+    { key:'fastp_length_required',   flag:'--length_required',         def:50, desc:'Reads shorter than this after trimming are discarded.' },
+    { key:'fastp_n_base_limit',      flag:'--n_base_limit',            def:2,  desc:'Reads with more than this many N bases are discarded.' },
+    { note:true, label:'Adapter detection', value:'--detect_adapter_for_pe (auto)', desc:'Paired-end adapters auto-detected unless an adapter FASTA is supplied. No sliding-window cutting (--cut_* not set).' },
+  ]},
+  { group:'Mapping (bowtie2)', items:[
+    { key:'bowtie2_args', flag:'ext.args', def:'--local', desc:'Bowtie2 alignment arguments (CLC local alignment).' },
+  ]},
+  { group:'Primer trim (ivar trim)', items:[
+    { key:'ivar_trim_min_qual', flag:'-q', def:20, desc:'Minimum quality in the sliding window during primer trimming.' },
+    { key:'ivar_trim_min_len',  flag:'-m', def:50, desc:'Minimum read length to keep after primer trimming.' },
+    { note:true, label:'Keep primer-less reads', value:'-e (always on)', desc:'Reads that do not contain a primer are kept (CLC "don’t remove whole read"). Window size -s left at ivar default (4).' },
+  ]},
+  { group:'Variants (ivar variants)', items:[
+    { key:'ivar_variants_min_freq',  flag:'-t', def:0.01, desc:'Minimum alternate-allele frequency to report (1%).' },
+    { key:'ivar_variants_min_depth', flag:'-m', def:250,  desc:'Minimum depth to call a variant.' },
+    { key:'ivar_variants_min_qual',  flag:'-q', def:20,   desc:'Minimum base quality.' },
+  ]},
+  { group:'Variants (LoFreq)', items:[
+    { key:'lofreq_sig',     flag:'--sig',     def:0.005, desc:'Significance threshold for calling (0.5%).' },
+    { key:'lofreq_min_cov', flag:'--min-cov', def:100,   desc:'Minimum coverage for LoFreq call / filter.' },
+    { key:'lofreq_min_af',  flag:'-a (filter)',def:0.01, desc:'Minimum allele frequency retained by the filter (1%).' },
+  ]},
+  { group:'Consensus (ivar consensus)', items:[
+    { key:'consensus_min_depth', flag:'-m', def:10, desc:'Positions below this depth are called N.' },
+    { key:'consensus_min_freq',  flag:'-t', def:0,  desc:'Frequency threshold; 0 = majority "vote" base.' },
+  ]},
+  { group:'Phylogeny (MAFFT + IQ-TREE)', items:[
+    { key:'mafft_args',      flag:'ext.args', def:'--maxiterate 1000 --localpair', desc:'MAFFT alignment settings (L-INS-i, "Very Accurate").' },
+    { key:'iqtree_model',    flag:'-m',       def:'MFP',  desc:'Substitution model; MFP = ModelFinder Plus.' },
+    { key:'iqtree_bootstrap',flag:'-B',       def:1000,   desc:'UFBoot ultrafast bootstrap replicates.' },
+  ]},
+  { group:'Stage toggles', items:[
+    { key:'skip_fastqc',        flag:'--skip_fastqc',        def:false, desc:'Skip FastQC read QC.' },
+    { key:'skip_ivar_variants', flag:'--skip_ivar_variants', def:false, desc:'Skip iVar variant calling.' },
+    { key:'skip_lofreq',        flag:'--skip_lofreq',        def:false, desc:'Skip the LoFreq variant path.' },
+    { key:'skip_phylogeny',     flag:'--skip_phylogeny',     def:false, desc:'Skip per-segment consensus, MSA and tree building.' },
+  ]},
+];
+const PARAM_KEYS = new Set(PARAM_DEFS.flatMap(g => g.items.filter(i => i.key).map(i => i.key)));
 
 /* ============================ file routing ============================ */
 const drop=document.getElementById('drop'), fileInput=document.getElementById('file');
@@ -115,6 +179,7 @@ async function handleFiles(list){
       else if(low.endsWith('.tsv')) await readIvar(f);
       else if(low.endsWith('.vcf')||low.endsWith('.vcf.gz')) await readVcf(f,low.endsWith('.gz'));
       else if(low.endsWith('.treefile')||low.endsWith('.nwk')||low.endsWith('.nexus')) await readTree(f);
+      else if(low.endsWith('.json')) await readParams(f);
       else if(low.endsWith('.csv')) await readMeta(f);
     }catch(err){ console.error('failed',name,err); }
   }
@@ -179,6 +244,15 @@ async function readMeta(f){
   for(let i=1;i<lines.length;i++){const c=lines[i].split(sep); const id=(c[0]||'').trim(); if(!id)continue;
     const o={}; h.forEach((k,j)=>{if(j>0)o[k]=(c[j]||'').trim()}); S.meta[id]=o;}
 }
+// Nextflow dumps the full resolved parameter set to pipeline_info/params.json.
+async function readParams(f){
+  const txt=await readText(f,false);
+  let obj; try{ obj=JSON.parse(txt); }catch(e){ return; }
+  if(!obj||typeof obj!=='object') return;
+  // Only accept JSON that actually looks like an ARBOR params dump.
+  if(!Object.keys(obj).some(k=>PARAM_KEYS.has(k))) return;
+  S.params=obj;
+}
 
 /* ============================ chips ============================ */
 function renderChips(){
@@ -189,6 +263,7 @@ function renderChips(){
   add('coverage sets',Object.keys(S.cov).length);
   add('trees',Object.keys(S.trees).length);
   add('metadata rows',Object.keys(S.meta).length);
+  add('params loaded',S.params?1:0);
 }
 
 /* ============================ tabs ============================ */
@@ -197,7 +272,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
   b.classList.add('active'); document.getElementById(b.dataset.tab).classList.add('active');
 });
-function renderAll(){ renderSummary(); renderVariants(); renderCoverage(); renderPhylo(); }
+function renderAll(){ renderSummary(); renderVariants(); renderCoverage(); renderPhylo(); renderParams(); }
 const segList=()=>[...S.segments].filter(s=>!Object.keys(S.trees).includes(s)||true).sort();
 const sampList=()=>[...S.samples].sort();
 
@@ -393,6 +468,57 @@ function drawTree(seg,colorCol,showSupport){
 function sampleKey(tipName){ // tip like "R3D706_NC_014395_S" -> "R3D706"
   return tipName.split('_')[0];
 }
+
+/* ============================ Parameters ============================ */
+function pEsc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+const pNorm = v => (v===null||v===undefined) ? '' : String(v);
+// Human-readable value; special-cases the two "null means auto" params.
+function pFmt(v,key){
+  if(v===null||v===undefined||v===''){
+    if(key==='adapter_fasta') return '— (auto-detect Illumina)';
+    if(key==='context_fasta') return 'none';
+    return '—';
+  }
+  if(typeof v==='boolean') return v?'true':'false';
+  return String(v);
+}
+function renderParams(){
+  const el=document.getElementById('params');
+  const loaded=!!S.params;
+  // Count params that differ from their documented default.
+  let changed=0;
+  for(const g of PARAM_DEFS) for(const it of g.items){
+    if(it.note||!loaded) continue;
+    if((it.key in S.params) && pNorm(S.params[it.key])!==pNorm(it.def)) changed++;
+  }
+  const banner = loaded
+    ? `<div class="banner on">Values from <code>params.json</code> — <b>${changed}</b> parameter${changed===1?'':'s'} changed from default${changed?' (highlighted below)':''}.</div>`
+    : `<div class="banner">Showing pipeline <b>defaults</b>. Drop this run's <code>pipeline_info/params.json</code> to see the values it actually used.</div>`;
+
+  const cards = PARAM_DEFS.map(g=>{
+    const rows = g.items.map(it=>{
+      if(it.note){
+        return `<tr><td><b>${pEsc(it.label)}</b></td><td class="val">${pEsc(it.value)}</td><td class="val">—</td><td class="desc">${pEsc(it.desc)}</td></tr>`;
+      }
+      const has = loaded && (it.key in S.params);
+      const used = has ? S.params[it.key] : it.def;
+      const isChanged = has && pNorm(used)!==pNorm(it.def);
+      return `<tr class="${isChanged?'changed':''}">`
+        + `<td><b>${pEsc(it.key)}</b><br><code>${pEsc(it.flag)}</code></td>`
+        + `<td class="val">${pEsc(pFmt(used,it.key))}${isChanged?'<span class="badge">changed</span>':''}</td>`
+        + `<td class="val">${pEsc(pFmt(it.def,it.key))}</td>`
+        + `<td class="desc">${pEsc(it.desc)}</td></tr>`;
+    }).join('');
+    return `<div class="card"><h3>${pEsc(g.group)}</h3>
+      <table><thead><tr><th>Parameter</th><th>Value used</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+  }).join('');
+
+  el.innerHTML = banner + cards;
+}
+
+// Populate the Parameters tab with defaults on first load (before any files are dropped).
+renderParams();
 </script>
 </body>
 </html>
