@@ -54,6 +54,32 @@
   .sw{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:5px;vertical-align:-1px}
   a.link{color:var(--accent2)}
   code{background:var(--panel2);padding:1px 5px;border-radius:4px;font-size:12px}
+  .banner{border:1px solid var(--line);border-radius:8px;padding:11px 14px;margin-bottom:16px;font-size:13px;background:var(--panel2);color:var(--muted)}
+  .banner.on{border-color:var(--accent);color:var(--ink)}
+  .badge{display:inline-block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;padding:1px 6px;border-radius:10px;margin-left:8px;background:var(--warn);color:#1a2129}
+  tr.changed td{color:var(--warn)}
+  td.desc{white-space:normal;color:var(--muted)}
+  td.val{font-variant-numeric:tabular-nums}
+  .togglebar{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:0 0 12px}
+  .ctog{cursor:pointer;user-select:none}
+  .chip.off{opacity:.35}
+  .mini{background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:2px 9px;font-size:12px;cursor:pointer}
+  .mini:hover{border-color:var(--accent)}
+  .btn{background:var(--accent);color:#fff;border:none;border-radius:7px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+  .btn:hover{filter:brightness(1.08)} .btn:disabled{opacity:.4;cursor:default;filter:none}
+  .gwrap{display:flex;gap:12px;flex-wrap:wrap;margin:10px 0}
+  .gbin{flex:1;min-width:190px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;min-height:76px;transition:.12s}
+  .gbin.drop{border-color:var(--accent);background:#1d2c35}
+  .gbin.unassigned{background:var(--panel);border-style:dashed}
+  .gbin .gh{margin:0 0 8px;display:flex;align-items:center;gap:6px}
+  .gbin .gh .sw{flex:0 0 auto}
+  .gbin .gh input{background:none;border:none;border-bottom:1px solid transparent;color:var(--ink);font-size:13px;font-weight:700;width:100px}
+  .gbin .gh input:focus{outline:none;border-bottom-color:var(--line)}
+  .gbin .gh .cnt{color:var(--muted);font-weight:400;font-size:11px}
+  .gbin .gh .x{margin-left:auto;color:var(--muted);cursor:pointer;border:none;background:none;font-size:14px}
+  .gbin .gh .x:hover{color:var(--bad)}
+  .gchip{display:inline-block;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:3px 9px;margin:3px;font-size:12px;cursor:grab}
+  .gchip:active{cursor:grabbing} .gchip.drag{opacity:.4}
 </style>
 </head>
 <body>
@@ -63,22 +89,32 @@
 <main>
   <div id="drop" class="drop">
     <b>Drop ARBOR result files here</b> (or click to choose) — iVar <code>*.tsv</code>, LoFreq <code>*.vcf[.gz]</code>,
-    mosdepth <code>*.summary.txt</code> / <code>*.per-base.bed.gz</code>, IQ-TREE <code>*.treefile</code>, and a metadata <code>*.csv</code>.
+    samtools <code>*.stats</code>, bowtie2 <code>*.bowtie2.log</code>, mosdepth <code>*.summary.txt</code> /
+    <code>*.per-base.bed.gz</code>, IQ-TREE <code>*.treefile</code>, consensus <code>*.fasta</code>, a metadata
+    <code>*.csv</code>, and the run's <code>pipeline_info/params.json</code>.
     <input id="file" type="file" multiple style="display:none"/>
   </div>
   <div id="loaded" class="loaded"></div>
 
   <nav>
     <button data-tab="summary" class="active">Run summary</button>
-    <button data-tab="variants">iSNVs / Variants</button>
+    <button data-tab="mapping">Mapping</button>
     <button data-tab="coverage">Coverage</button>
+    <button data-tab="variants">iSNVs / Variants</button>
+    <button data-tab="groups">SNP Groups</button>
+    <button data-tab="consensus">Consensus</button>
     <button data-tab="phylo">Phylogeny</button>
+    <button data-tab="params">Parameters</button>
   </nav>
 
   <section id="summary" class="tab active"></section>
-  <section id="variants" class="tab"></section>
+  <section id="mapping" class="tab"></section>
   <section id="coverage" class="tab"></section>
+  <section id="variants" class="tab"></section>
+  <section id="groups" class="tab"></section>
+  <section id="consensus" class="tab"></section>
   <section id="phylo" class="tab"></section>
+  <section id="params" class="tab"></section>
 </main>
 
 <script>
@@ -89,9 +125,68 @@ const S = {
   trees: {},      // segment -> newick string
   meta: {},       // sample -> {col:val}
   metaCols: [],
+  params: null,   // parsed pipeline_info/params.json (values actually used by the run)
+  mapping: {},    // sample -> { raw:{SN}, trim:{SN}, alnRate:Number }  (samtools stats + bowtie2 log)
+  consensus: [],  // [ {header, sample, segment, seq, len, ns} ]  parsed consensus FASTA records
+  covHidden: new Set(),  // samples toggled off in the Coverage plot
+  grouping: null, // { groups:[{id,name}], assign:{sample:gid} }  for the SNP Groups tab
   samples: new Set(), segments: new Set(),
 };
 const palette = d3.schemeTableau10.concat(d3.schemeSet3);
+
+/* ============================ pipeline parameters (defaults + docs) ============================
+   Single source of truth for the Parameters tab. Defaults/flags mirror nextflow.config +
+   conf/modules.config. `key` matches the field in pipeline_info/params.json; `flag` is the
+   underlying tool option; `note:true` rows are static explanations (no params.json key). */
+const PARAM_DEFS = [
+  { group:'References & primers', items:[
+    { key:'reference',     flag:'--reference',   def:'assets/rvfv/rvfv_reference.fa',        desc:'Reference FASTA for mapping, variants and consensus.' },
+    { key:'primer_bed',    flag:'-b (ivar trim)',def:'assets/rvfv/rvfv_amplicons_v4.bed',    desc:'Tiling-amplicon primer BED used for primer trimming.' },
+    { key:'segments',      flag:'--segments',    def:'NC_014395_S,NC_014396_M,NC_014397_L',  desc:'Reference record IDs to split by for per-segment consensus/phylogeny.' },
+    { key:'context_fasta', flag:'MAFFT --add',   def:null,                                   desc:'Optional external strains folded into each per-segment alignment/tree.' },
+    { key:'adapter_fasta', flag:'--adapter_fasta',def:null,                                  desc:'Adapter FASTA for fastp; null means auto-detect Illumina adapters.' },
+  ]},
+  { group:'Read trimming (fastp)', items:[
+    { key:'fastp_qualified_quality', flag:'--qualified_quality_phred', def:13, desc:'Per-base quality threshold; bases below count as "unqualified" (CLC Q-limit 0.05 ≈ Q13).' },
+    { key:'fastp_length_required',   flag:'--length_required',         def:50, desc:'Reads shorter than this after trimming are discarded.' },
+    { key:'fastp_n_base_limit',      flag:'--n_base_limit',            def:2,  desc:'Reads with more than this many N bases are discarded.' },
+    { note:true, label:'Adapter detection', value:'--detect_adapter_for_pe (auto)', desc:'Paired-end adapters auto-detected unless an adapter FASTA is supplied. No sliding-window cutting (--cut_* not set).' },
+  ]},
+  { group:'Mapping (bowtie2)', items:[
+    { key:'bowtie2_args', flag:'ext.args', def:'--local', desc:'Bowtie2 alignment arguments (CLC local alignment).' },
+  ]},
+  { group:'Primer trim (ivar trim)', items:[
+    { key:'ivar_trim_min_qual', flag:'-q', def:20, desc:'Minimum quality in the sliding window during primer trimming.' },
+    { key:'ivar_trim_min_len',  flag:'-m', def:50, desc:'Minimum read length to keep after primer trimming.' },
+    { note:true, label:'Keep primer-less reads', value:'-e (always on)', desc:'Reads that do not contain a primer are kept (CLC "don’t remove whole read"). Window size -s left at ivar default (4).' },
+  ]},
+  { group:'Variants (ivar variants)', items:[
+    { key:'ivar_variants_min_freq',  flag:'-t', def:0.01, desc:'Minimum alternate-allele frequency to report (1%).' },
+    { key:'ivar_variants_min_depth', flag:'-m', def:250,  desc:'Minimum depth to call a variant.' },
+    { key:'ivar_variants_min_qual',  flag:'-q', def:20,   desc:'Minimum base quality.' },
+  ]},
+  { group:'Variants (LoFreq)', items:[
+    { key:'lofreq_sig',     flag:'--sig',     def:0.005, desc:'Significance threshold for calling (0.5%).' },
+    { key:'lofreq_min_cov', flag:'--min-cov', def:100,   desc:'Minimum coverage for LoFreq call / filter.' },
+    { key:'lofreq_min_af',  flag:'-a (filter)',def:0.01, desc:'Minimum allele frequency retained by the filter (1%).' },
+  ]},
+  { group:'Consensus (ivar consensus)', items:[
+    { key:'consensus_min_depth', flag:'-m', def:10, desc:'Positions below this depth are called N.' },
+    { key:'consensus_min_freq',  flag:'-t', def:0,  desc:'Frequency threshold; 0 = majority "vote" base.' },
+  ]},
+  { group:'Phylogeny (MAFFT + IQ-TREE)', items:[
+    { key:'mafft_args',      flag:'ext.args', def:'--maxiterate 1000 --localpair', desc:'MAFFT alignment settings (L-INS-i, "Very Accurate").' },
+    { key:'iqtree_model',    flag:'-m',       def:'MFP',  desc:'Substitution model; MFP = ModelFinder Plus.' },
+    { key:'iqtree_bootstrap',flag:'-B',       def:1000,   desc:'UFBoot ultrafast bootstrap replicates.' },
+  ]},
+  { group:'Stage toggles', items:[
+    { key:'skip_fastqc',        flag:'--skip_fastqc',        def:false, desc:'Skip FastQC read QC.' },
+    { key:'skip_ivar_variants', flag:'--skip_ivar_variants', def:false, desc:'Skip iVar variant calling.' },
+    { key:'skip_lofreq',        flag:'--skip_lofreq',        def:false, desc:'Skip the LoFreq variant path.' },
+    { key:'skip_phylogeny',     flag:'--skip_phylogeny',     def:false, desc:'Skip per-segment consensus, MSA and tree building.' },
+  ]},
+];
+const PARAM_KEYS = new Set(PARAM_DEFS.flatMap(g => g.items.filter(i => i.key).map(i => i.key)));
 
 /* ============================ file routing ============================ */
 const drop=document.getElementById('drop'), fileInput=document.getElementById('file');
@@ -112,9 +207,13 @@ async function handleFiles(list){
       if(low.endsWith('.gz') && low.includes('per-base')) await readCov(f,true);
       else if(low.includes('summary')&&low.endsWith('.txt')) await readMosSummary(f);
       else if(low.includes('per-base')&&low.endsWith('.bed')) await readCov(f,false);
+      else if(low.endsWith('.stats')||low.endsWith('.stats.gz')) await readStats(f);
+      else if(low.endsWith('.log')) await readBowtieLog(f);
+      else if(low.endsWith('.fasta')||low.endsWith('.fa')||low.endsWith('.fna')||low.endsWith('.fasta.gz')) await readConsensus(f);
       else if(low.endsWith('.tsv')) await readIvar(f);
       else if(low.endsWith('.vcf')||low.endsWith('.vcf.gz')) await readVcf(f,low.endsWith('.gz'));
       else if(low.endsWith('.treefile')||low.endsWith('.nwk')||low.endsWith('.nexus')) await readTree(f);
+      else if(low.endsWith('.json')) await readParams(f);
       else if(low.endsWith('.csv')) await readMeta(f);
     }catch(err){ console.error('failed',name,err); }
   }
@@ -179,6 +278,70 @@ async function readMeta(f){
   for(let i=1;i<lines.length;i++){const c=lines[i].split(sep); const id=(c[0]||'').trim(); if(!id)continue;
     const o={}; h.forEach((k,j)=>{if(j>0)o[k]=(c[j]||'').trim()}); S.meta[id]=o;}
 }
+// Nextflow dumps the full resolved parameter set to pipeline_info/params.json.
+async function readParams(f){
+  const txt=await readText(f,false);
+  let obj; try{ obj=JSON.parse(txt); }catch(e){ return; }
+  if(!obj||typeof obj!=='object') return;
+  // Only accept JSON that actually looks like an ARBOR params dump.
+  if(!Object.keys(obj).some(k=>PARAM_KEYS.has(k))) return;
+  S.params=obj;
+}
+// samtools stats — the SN (summary number) section. Files are <sample>.raw.stats
+// (pre-primer-trim) or <sample>.primertrim.stats (post-trim); fall back to <sample>.stats.
+async function readStats(f){
+  const gz=f.name.toLowerCase().endsWith('.gz');
+  const txt=await readText(f,gz);
+  const m=f.name.match(/^(.+?)\.(raw|primertrim)\.stats(\.gz)?$/i);
+  const sample = m ? m[1] : f.name.replace(/\.stats(\.gz)?$/i,'');
+  const phase  = m ? (/raw/i.test(m[2]) ? 'raw' : 'trim') : 'trim';
+  const SN={};
+  for(const ln of txt.split(/\r?\n/)){
+    if(ln.startsWith('SN\t')){
+      const p=ln.split('\t'); if(p.length<3) continue;
+      const key=p[1].replace(/:$/,'').trim(); const num=parseFloat(p[2]);
+      SN[key]=isNaN(num)?p[2]:num;
+    }
+  }
+  if(!Object.keys(SN).length) return;                 // not a samtools stats file
+  S.mapping[sample]=S.mapping[sample]||{}; S.mapping[sample][phase]=SN; S.samples.add(sample);
+}
+// bowtie2 stderr log — grab the "XX.XX% overall alignment rate" line.
+async function readBowtieLog(f){
+  const txt=await readText(f,false);
+  const m=txt.match(/([\d.]+)%\s+overall alignment rate/i);
+  if(!m) return;                                       // not a bowtie2 log
+  const sample=f.name.replace(/\.bowtie2\.log$/i,'').replace(/\.log$/i,'');
+  S.mapping[sample]=S.mapping[sample]||{}; S.mapping[sample].alnRate=parseFloat(m[1]); S.samples.add(sample);
+}
+// Consensus FASTA (one or many records). Infer segment from a known segment id in
+// the header/filename, and sample from the remaining header text.
+function inferConsId(header, fname){
+  let segment='';
+  for(const sg of S.segments){ if(header.includes(sg)||fname.includes(sg)){ segment=sg; break; } }
+  if(!segment){ const fm=fname.match(/^(.+?)\.consensus\.fasta/i); if(fm && /^[A-Za-z0-9_.]+$/.test(fm[1])) segment=fm[1]; }
+  let sample=header.replace(/^Consensus[_-]/i,'');
+  if(segment) sample=sample.split(segment).join('');
+  sample=sample.replace(/[._]threshold.*$/i,'').replace(/[._](primertrim|sorted|raw|consensus)/gi,'')
+               .replace(/[_.\-]+$/,'').replace(/^[_.\-]+/,'').trim();
+  return { sample: sample||header, segment };
+}
+async function readConsensus(f){
+  const gz=f.name.toLowerCase().endsWith('.gz');
+  const txt=await readText(f,gz);
+  if(!txt.trimStart().startsWith('>')) return;         // not FASTA
+  for(const chunk of txt.split(/^>/m)){
+    if(!chunk.trim()) continue;
+    const nl=chunk.indexOf('\n');
+    const header=(nl<0?chunk:chunk.slice(0,nl)).trim();
+    const seq=(nl<0?'':chunk.slice(nl+1)).replace(/\s+/g,'');
+    if(!seq) continue;
+    const ns=(seq.match(/[Nn]/g)||[]).length;
+    const {sample,segment}=inferConsId(header,f.name);
+    S.consensus.push({header,sample,segment,seq,len:seq.length,ns,sel:true});
+    if(sample) S.samples.add(sample); if(segment) S.segments.add(segment);
+  }
+}
 
 /* ============================ chips ============================ */
 function renderChips(){
@@ -186,9 +349,12 @@ function renderChips(){
   const add=(l,n)=>{if(n)el.insertAdjacentHTML('beforeend',`<span class="chip"><b>${n}</b> ${l}</span>`);};
   add('samples',S.samples.size); add('segments',S.segments.size);
   add('variant sets',Object.keys(S.variants).length);
+  add('mapping stats',Object.keys(S.mapping).length);
   add('coverage sets',Object.keys(S.cov).length);
+  add('consensus seqs',S.consensus.length);
   add('trees',Object.keys(S.trees).length);
   add('metadata rows',Object.keys(S.meta).length);
+  add('params loaded',S.params?1:0);
 }
 
 /* ============================ tabs ============================ */
@@ -197,7 +363,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
   b.classList.add('active'); document.getElementById(b.dataset.tab).classList.add('active');
 });
-function renderAll(){ renderSummary(); renderVariants(); renderCoverage(); renderPhylo(); }
+function renderAll(){ renderSummary(); renderMapping(); renderVariants(); renderCoverage(); renderGroups(); renderConsensus(); renderPhylo(); renderParams(); }
 const segList=()=>[...S.segments].filter(s=>!Object.keys(S.trees).includes(s)||true).sort();
 const sampList=()=>[...S.samples].sort();
 
@@ -287,21 +453,37 @@ function renderCoverage(){
     <div class="controls">Segment <select id="cSeg"></select>
       <label><input id="cLog" type="checkbox"/> log depth</label>
       ${havePB?'':'<span>(no per-base files — showing mean depth from summaries)</span>'}</div>
+    <div id="cSamples" class="togglebar"></div>
     <div id="cPlot"></div><div id="cLegend" class="legend"></div></div>`;
   const segSel=document.getElementById('cSeg');
   [...S.segments].filter(s=>!S.trees[s]||true).sort().forEach(s=>segSel.add(new Option(s,s)));
   const upd=()=>drawCoverage(segSel.value,document.getElementById('cLog').checked);
-  segSel.onchange=upd; document.getElementById('cLog').onchange=upd; upd();
+  segSel.onchange=upd; document.getElementById('cLog').onchange=upd;
+  paintCovToggles(upd); upd();
+}
+// Clickable per-sample toggles for the coverage plot (declutter to samples of interest).
+function paintCovToggles(redraw){
+  const box=document.getElementById('cSamples'); if(!box) return;
+  const samps=Object.keys(S.cov).sort();
+  box.innerHTML = `<span style="color:var(--muted)">Show:</span>`
+    + `<button class="mini" data-all="1">all</button><button class="mini" data-none="1">none</button>`
+    + samps.map(s=>`<span class="ctog chip ${S.covHidden.has(s)?'off':''}" data-s="${s}"><span class="sw" style="background:${colorFor(s)}"></span>${s}</span>`).join('');
+  box.querySelectorAll('.ctog').forEach(c=>c.onclick=()=>{
+    const s=c.dataset.s; S.covHidden.has(s)?S.covHidden.delete(s):S.covHidden.add(s);
+    paintCovToggles(redraw); redraw();
+  });
+  box.querySelector('[data-all]').onclick=()=>{ S.covHidden.clear(); paintCovToggles(redraw); redraw(); };
+  box.querySelector('[data-none]').onclick=()=>{ Object.keys(S.cov).forEach(s=>S.covHidden.add(s)); paintCovToggles(redraw); redraw(); };
 }
 function drawCoverage(seg,log){
   const wrap=d3.select('#cPlot'); wrap.selectAll('*').remove();
   const W=wrap.node().clientWidth||820,H=320,m={t:14,r:14,b:36,l:54};
-  const series=[]; for(const s of Object.keys(S.cov)){const pb=S.cov[s].perbase[seg];
+  const series=[]; for(const s of Object.keys(S.cov)){ if(S.covHidden.has(s)) continue; const pb=S.cov[s].perbase[seg];
     if(pb&&pb.length) series.push({sample:s,data:downsample(pb,1200)});}
   const svg=wrap.append('svg').attr('width',W).attr('height',H);
   if(!series.length){
     // fall back to mean-depth bars from summaries
-    const means=Object.keys(S.cov).map(s=>({sample:s,mean:(S.cov[s].summary[seg]||{}).mean})).filter(d=>d.mean!=null);
+    const means=Object.keys(S.cov).map(s=>({sample:s,mean:(S.cov[s].summary[seg]||{}).mean})).filter(d=>d.mean!=null&&!S.covHidden.has(d.sample));
     if(!means.length){wrap.append('div').attr('class','empty').text('No coverage data for this segment.');return;}
     const x=d3.scaleBand().domain(means.map(d=>d.sample)).range([m.l,W-m.r]).padding(.2);
     const y=d3.scaleLinear().domain([0,d3.max(means,d=>d.mean)]).nice().range([H-m.b,m.t]);
@@ -393,6 +575,287 @@ function drawTree(seg,colorCol,showSupport){
 function sampleKey(tipName){ // tip like "R3D706_NC_014395_S" -> "R3D706"
   return tipName.split('_')[0];
 }
+
+/* ============================ Parameters ============================ */
+function pEsc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+const pNorm = v => (v===null||v===undefined) ? '' : String(v);
+// Human-readable value; special-cases the two "null means auto" params.
+function pFmt(v,key){
+  if(v===null||v===undefined||v===''){
+    if(key==='adapter_fasta') return '— (auto-detect Illumina)';
+    if(key==='context_fasta') return 'none';
+    return '—';
+  }
+  if(typeof v==='boolean') return v?'true':'false';
+  return String(v);
+}
+function renderParams(){
+  const el=document.getElementById('params');
+  const loaded=!!S.params;
+  // Count params that differ from their documented default.
+  let changed=0;
+  for(const g of PARAM_DEFS) for(const it of g.items){
+    if(it.note||!loaded) continue;
+    if((it.key in S.params) && pNorm(S.params[it.key])!==pNorm(it.def)) changed++;
+  }
+  const banner = loaded
+    ? `<div class="banner on">Values from <code>params.json</code> — <b>${changed}</b> parameter${changed===1?'':'s'} changed from default${changed?' (highlighted below)':''}.</div>`
+    : `<div class="banner">Showing pipeline <b>defaults</b>. Drop this run's <code>pipeline_info/params.json</code> to see the values it actually used.</div>`;
+
+  const cards = PARAM_DEFS.map(g=>{
+    const rows = g.items.map(it=>{
+      if(it.note){
+        return `<tr><td><b>${pEsc(it.label)}</b></td><td class="val">${pEsc(it.value)}</td><td class="val">—</td><td class="desc">${pEsc(it.desc)}</td></tr>`;
+      }
+      const has = loaded && (it.key in S.params);
+      const used = has ? S.params[it.key] : it.def;
+      const isChanged = has && pNorm(used)!==pNorm(it.def);
+      return `<tr class="${isChanged?'changed':''}">`
+        + `<td><b>${pEsc(it.key)}</b><br><code>${pEsc(it.flag)}</code></td>`
+        + `<td class="val">${pEsc(pFmt(used,it.key))}${isChanged?'<span class="badge">changed</span>':''}</td>`
+        + `<td class="val">${pEsc(pFmt(it.def,it.key))}</td>`
+        + `<td class="desc">${pEsc(it.desc)}</td></tr>`;
+    }).join('');
+    return `<div class="card"><h3>${pEsc(g.group)}</h3>
+      <table><thead><tr><th>Parameter</th><th>Value used</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+  }).join('');
+
+  el.innerHTML = banner + cards;
+}
+
+/* ============================ Mapping ============================ */
+function fmtInt(n){ return (n==null||isNaN(n))?'—':Math.round(n).toLocaleString(); }
+function fmtPct(n){ return (n==null||isNaN(n))?'—':n.toFixed(1)+'%'; }
+function renderMapping(){
+  const el=document.getElementById('mapping');
+  const samps=Object.keys(S.mapping).sort();
+  if(!samps.length){ el.innerHTML='<div class="empty">Drop samtools <code>*.stats</code> and/or bowtie2 <code>*.bowtie2.log</code> files to see per-sample mapping metrics.</div>'; return; }
+  const rows=samps.map(s=>{
+    const M=S.mapping[s], SN=M.trim||M.raw||{};        // prefer post-primer-trim (the analysis BAM)
+    const total=SN['raw total sequences'], mapped=SN['reads mapped'],
+          proper=SN['reads properly paired'], dup=SN['reads duplicated'],
+          err=SN['error rate'], ins=SN['insert size average'];
+    const alnRate = (M.alnRate!=null)?M.alnRate : (total?mapped/total*100:null);
+    const properPct = total?proper/total*100:null, dupPct = total?dup/total*100:null;
+    const phase = M.trim?'post-trim':(M.raw?'pre-trim':'—');
+    return `<tr><td><b>${pEsc(s)}</b></td>`
+      +`<td class="val">${fmtInt(total)}</td><td class="val">${fmtInt(mapped)}</td>`
+      +`<td class="val">${fmtPct(alnRate)}</td><td class="val">${fmtPct(properPct)}</td>`
+      +`<td class="val">${err==null?'—':(+err).toFixed(4)}</td>`
+      +`<td class="val">${ins==null?'—':Math.round(ins)}</td>`
+      +`<td class="val">${fmtPct(dupPct)}</td><td class="val">${phase}</td></tr>`;
+  }).join('');
+  const hasAln=Object.values(S.mapping).some(m=>m.alnRate!=null);
+  el.innerHTML=`<div class="card"><h3>Per-sample mapping metrics</h3>
+    <div class="controls">From samtools stats${hasAln?' + bowtie2 alignment rate':''}. Uses the post-primer-trim BAM where available.</div>
+    <div class="scroll"><table><thead><tr>
+      <th>Sample</th><th>Total reads</th><th>Reads mapped</th><th>% mapped</th><th>Properly paired</th><th>Error rate</th><th>Mean insert</th><th>Duplicates</th><th>Stage</th>
+    </tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
+
+/* ============================ Consensus ============================ */
+function downloadText(name,text){
+  const blob=new Blob([text],{type:'text/plain'}); const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+function renderConsensus(){
+  const el=document.getElementById('consensus');
+  if(!S.consensus.length){ el.innerHTML='<div class="empty">Drop consensus <code>*.fasta</code> files (per-segment or per-sample) to browse and download sequences.</div>'; return; }
+  const segs=[...new Set(S.consensus.map(r=>r.segment).filter(Boolean))].sort();
+  el.innerHTML=`<div class="card"><h3>Consensus sequences <span style="color:var(--muted);font-weight:400">(${S.consensus.length} loaded)</span></h3>
+    <div class="controls">
+      ${segs.length?`Segment <select id="kSeg"><option value="">all</option>${segs.map(s=>`<option>${pEsc(s)}</option>`).join('')}</select>`:''}
+      <button class="mini" id="kAll">select all</button><button class="mini" id="kNone">select none</button>
+      <span id="kCount" style="color:var(--muted)"></span>
+      <span style="flex:1"></span>
+      <button class="btn" id="kDl">⬇ Download selected FASTA</button>
+    </div>
+    <div class="scroll"><table id="kTable"></table></div></div>`;
+  const segSel=document.getElementById('kSeg');
+  const updCount=()=>{ const n=S.consensus.filter(r=>r.sel).length;
+    const c=document.getElementById('kCount'); if(c)c.textContent=`${n} selected`;
+    const dl=document.getElementById('kDl'); if(dl)dl.disabled=!n; };
+  const paint=()=>{
+    const segFilter=segSel?segSel.value:'';
+    const rows=S.consensus.map((r,i)=>({r,i})).filter(({r})=>!segFilter||r.segment===segFilter);
+    const body=rows.map(({r,i})=>{
+      const pctN=r.len?(r.ns/r.len*100):0;
+      return `<tr><td><input type="checkbox" data-i="${i}" ${r.sel?'checked':''}></td>`
+        +`<td><b>${pEsc(r.sample||'—')}</b></td><td>${pEsc(r.segment||'—')}</td>`
+        +`<td class="val">${r.len.toLocaleString()}</td>`
+        +`<td class="val">${r.ns.toLocaleString()} (${pctN.toFixed(1)}%)</td>`
+        +`<td style="color:var(--muted);max-width:320px;overflow:hidden;text-overflow:ellipsis">${pEsc(r.header)}</td></tr>`;
+    }).join('');
+    document.getElementById('kTable').innerHTML=`<thead><tr><th></th><th>Sample</th><th>Segment</th><th>Length</th><th>Ns</th><th>Header</th></tr></thead><tbody>${body}</tbody>`;
+    document.querySelectorAll('#kTable input[type=checkbox]').forEach(cb=>cb.onchange=()=>{ S.consensus[+cb.dataset.i].sel=cb.checked; updCount(); });
+    updCount();
+  };
+  if(segSel) segSel.onchange=paint;
+  document.getElementById('kAll').onclick=()=>{ S.consensus.forEach(r=>r.sel=true); paint(); };
+  document.getElementById('kNone').onclick=()=>{ S.consensus.forEach(r=>r.sel=false); paint(); };
+  document.getElementById('kDl').onclick=()=>{
+    const sel=S.consensus.filter(r=>r.sel); if(!sel.length) return;
+    const fa=sel.map(r=>`>${r.header}\n${(r.seq.match(/.{1,70}/g)||[]).join('\n')}`).join('\n')+'\n';
+    downloadText('arbor_consensus_selected.fasta', fa);
+  };
+  paint();
+}
+
+/* ============================ SNP Groups ============================
+   Drag samples into groups, then compare their SNPs. All client-side: uses the
+   variant calls already in S.variants. */
+function variantKey(v){ return `${v.region}:${v.pos}:${v.ref}>${v.alt}`; }
+function ensureGrouping(){
+  if(S.grouping) return;
+  S.grouping={ groups:[{id:'g1',name:'Group 1'},{id:'g2',name:'Group 2'}], assign:{} };
+}
+function groupColor(i){ return palette[i%palette.length]; }
+function samplesInGroup(gid){ return [...S.samples].filter(s=>S.grouping.assign[s]===gid).sort(); }
+function unassignedSamples(){ return [...S.samples].filter(s=>{const g=S.grouping.assign[s]; return !g || !S.grouping.groups.some(x=>x.id===g);}).sort(); }
+
+function renderGroups(){
+  const el=document.getElementById('groups');
+  const withVars=[...S.samples].filter(s=>S.variants[s]&&S.variants[s].length);
+  if(!withVars.length){ el.innerHTML='<div class="empty">Load variant files (iVar <code>*.tsv</code> / LoFreq <code>*.vcf</code>) to compare SNPs across sample groups.</div>'; return; }
+  ensureGrouping();
+  const G=S.grouping;
+  const metaSel = S.metaCols.length
+    ? `Auto-group by <select id="gAuto"><option value="">— metadata column —</option>${S.metaCols.map(c=>`<option>${pEsc(c)}</option>`).join('')}</select>` : '';
+  const binHtml = (gid,name,i,unassigned)=>{
+    const samps = unassigned ? unassignedSamples() : samplesInGroup(gid);
+    const chips = samps.map(s=>`<span class="gchip" draggable="true" data-s="${pEsc(s)}">${pEsc(s)}</span>`).join('')||'<span style="color:var(--muted);font-size:12px">drag samples here</span>';
+    const head = unassigned
+      ? `<div class="gh"><b>Unassigned</b> <span class="cnt">${samps.length}</span></div>`
+      : `<div class="gh"><span class="sw" style="background:${groupColor(i)}"></span><input value="${pEsc(name)}" data-gid="${gid}" class="gname"><span class="cnt">${samps.length}</span><button class="x" data-del="${gid}" title="remove group">✕</button></div>`;
+    return `<div class="gbin ${unassigned?'unassigned':''}" data-gid="${unassigned?'':gid}">${head}${chips}</div>`;
+  };
+  const bins = G.groups.map((g,i)=>binHtml(g.id,g.name,i,false)).join('') + binHtml('',null,0,true);
+  const groupOpts = G.groups.map(g=>`<option value="${g.id}">${pEsc(g.name)}</option>`).join('');
+
+  el.innerHTML=`<div class="card"><h3>Group samples</h3>
+    <div class="controls"><button class="mini" id="gAdd">+ Add group</button>${metaSel}
+      <span style="color:var(--muted)">Drag sample chips between groups.</span></div>
+    <div class="gwrap" id="gWrap">${bins}</div></div>
+    <div class="card"><h3>Compare SNPs between two groups</h3>
+    <div class="controls">
+      <select id="gA">${groupOpts}</select> vs <select id="gB">${groupOpts}</select>
+      <label><input type="checkbox" id="gPass" checked> PASS only</label>
+      <label>min prevalence <input type="number" id="gPrev" value="0" min="0" max="1" step="0.1" style="width:64px"></label>
+      <button class="btn" id="gRun">Run comparison</button>
+    </div>
+    <div id="gResult"><div class="empty">Assign samples to two groups, then Run comparison.</div></div></div>`;
+
+  // group name / add / delete
+  el.querySelectorAll('.gname').forEach(inp=>inp.onchange=()=>{ const g=G.groups.find(x=>x.id===inp.dataset.gid); if(g){g.name=inp.value||g.name;} renderGroups(); });
+  el.querySelectorAll('[data-del]').forEach(btn=>btn.onclick=()=>{ const gid=btn.dataset.del;
+    G.groups=G.groups.filter(x=>x.id!==gid); Object.keys(G.assign).forEach(s=>{if(G.assign[s]===gid)delete G.assign[s];}); renderGroups(); });
+  document.getElementById('gAdd').onclick=()=>{ const n=G.groups.length+1; G.groups.push({id:'g'+Date.now(),name:'Group '+n}); renderGroups(); };
+  const gAuto=document.getElementById('gAuto');
+  if(gAuto) gAuto.onchange=()=>{ if(!gAuto.value) return; autoGroupByMeta(gAuto.value); renderGroups(); };
+
+  // drag & drop
+  el.querySelectorAll('.gchip').forEach(ch=>{
+    ch.addEventListener('dragstart',e=>{ e.dataTransfer.setData('text/plain',ch.dataset.s); ch.classList.add('drag'); });
+    ch.addEventListener('dragend',()=>ch.classList.remove('drag'));
+  });
+  el.querySelectorAll('.gbin').forEach(bin=>{
+    bin.addEventListener('dragover',e=>{ e.preventDefault(); bin.classList.add('drop'); });
+    bin.addEventListener('dragleave',()=>bin.classList.remove('drop'));
+    bin.addEventListener('drop',e=>{ e.preventDefault(); bin.classList.remove('drop');
+      const s=e.dataTransfer.getData('text/plain'); const gid=bin.dataset.gid;
+      if(gid) S.grouping.assign[s]=gid; else delete S.grouping.assign[s];
+      renderGroups(); });
+  });
+
+  // comparison
+  const gA=document.getElementById('gA'), gB=document.getElementById('gB');
+  if(G.groups[1]) gB.value=G.groups[1].id;
+  document.getElementById('gRun').onclick=()=>{
+    runComparison(gA.value, gB.value,
+      document.getElementById('gPass').checked, parseFloat(document.getElementById('gPrev').value)||0);
+  };
+}
+
+function autoGroupByMeta(col){
+  const G=S.grouping; const seen={};
+  // rebuild groups from the distinct values of the chosen metadata column
+  G.groups=[]; G.assign={};
+  [...S.samples].forEach(s=>{
+    const v=(S.meta[s]||{})[col]; if(v==null||v==='') return;
+    if(!seen[v]){ seen[v]={id:'g'+Object.keys(seen).length+'_'+Date.now(), name:String(v)}; G.groups.push(seen[v]); }
+    G.assign[s]=seen[v].id;
+  });
+  if(!G.groups.length) G.groups=[{id:'g1',name:'Group 1'},{id:'g2',name:'Group 2'}];
+}
+
+// Aggregate a group's variants: key -> {n samples with it, sumFreq}. Mean over the
+// whole group (absent treated as 0). Returns {map, size}.
+function groupVariants(gid, passOnly){
+  const samps=samplesInGroup(gid); const map={};
+  for(const s of samps){
+    for(const v of (S.variants[s]||[])){
+      if(passOnly && !v.pass) continue;
+      const k=variantKey(v); const f=isNaN(v.freq)?0:v.freq;
+      if(!map[k]) map[k]={n:0,sum:0,region:v.region,pos:v.pos,ref:v.ref,alt:v.alt};
+      map[k].n++; map[k].sum+=f;
+    }
+  }
+  return {map, size:samps.length};
+}
+function runComparison(gidA, gidB, passOnly, minPrev){
+  const wrap=document.getElementById('gResult');
+  if(gidA===gidB){ wrap.innerHTML='<div class="empty">Pick two different groups.</div>'; return; }
+  const A=groupVariants(gidA,passOnly), B=groupVariants(gidB,passOnly);
+  if(!A.size||!B.size){ wrap.innerHTML='<div class="empty">Both groups need at least one sample with variants.</div>'; return; }
+  const nameA=S.grouping.groups.find(g=>g.id===gidA).name, nameB=S.grouping.groups.find(g=>g.id===gidB).name;
+  const keys=new Set([...Object.keys(A.map),...Object.keys(B.map)]);
+  const rows=[]; let shared=0,aOnly=0,bOnly=0;
+  keys.forEach(k=>{
+    const a=A.map[k], b=B.map[k];
+    const nA=a?a.n:0, nB=b?b.n:0;
+    const prevA=nA/A.size, prevB=nB/B.size;
+    if(Math.max(prevA,prevB)<minPrev) return;
+    const meanA=(a?a.sum:0)/A.size, meanB=(b?b.sum:0)/B.size;
+    const inA=nA>0, inB=nB>0;
+    if(inA&&inB) shared++; else if(inA) aOnly++; else bOnly++;
+    const ref=(a||b).ref, alt=(a||b).alt, region=(a||b).region, pos=(a||b).pos;
+    rows.push({region,pos,change:`${ref}>${alt}`,nA,nB,prevA,prevB,meanA,meanB,delta:meanB-meanA,
+      present: inA&&inB?'both':(inA?'A':'B')});
+  });
+  rows.sort((x,y)=>Math.abs(y.delta)-Math.abs(x.delta));
+  window._gCompare={rows,nameA,nameB};   // for CSV download
+
+  const cap=800;
+  const body=rows.slice(0,cap).map(r=>{
+    const badge=r.present==='both'?'':`<span class="badge" style="background:${r.present==='A'?'var(--accent2)':'var(--warn)'}">${r.present==='A'?nameA:nameB} only</span>`;
+    return `<tr><td>${pEsc(r.region)}</td><td class="val">${r.pos}</td><td>${pEsc(r.change)}${badge}</td>`
+      +`<td class="val">${r.nA} (${(r.prevA*100).toFixed(0)}%)</td><td class="val">${(r.meanA*100).toFixed(1)}%</td>`
+      +`<td class="val">${r.nB} (${(r.prevB*100).toFixed(0)}%)</td><td class="val">${(r.meanB*100).toFixed(1)}%</td>`
+      +`<td class="val" style="color:${r.delta>0?'var(--accent)':'var(--bad)'}">${r.delta>0?'+':''}${(r.delta*100).toFixed(1)}%</td></tr>`;
+  }).join('');
+  wrap.innerHTML=`<div class="kpi" style="margin-bottom:12px">
+      <div class="box"><div class="n">${shared}</div><div class="l">shared</div></div>
+      <div class="box"><div class="n">${aOnly}</div><div class="l">${pEsc(nameA)} only</div></div>
+      <div class="box"><div class="n">${bOnly}</div><div class="l">${pEsc(nameB)} only</div></div>
+      <div class="box"><div class="n">${rows.length}</div><div class="l">positions</div></div></div>
+    <div class="controls"><span style="color:var(--muted)">Δ = mean freq in <b>${pEsc(nameB)}</b> − <b>${pEsc(nameA)}</b> (sorted by |Δ|). ${rows.length>cap?`Showing top ${cap}.`:''}</span>
+      <span style="flex:1"></span><button class="mini" id="gCsv">⬇ Download full table (CSV)</button></div>
+    <div class="scroll"><table><thead><tr>
+      <th>Segment</th><th>Pos</th><th>Change</th><th>n ${pEsc(nameA)}</th><th>mean ${pEsc(nameA)}</th><th>n ${pEsc(nameB)}</th><th>mean ${pEsc(nameB)}</th><th>Δ freq</th>
+    </tr></thead><tbody>${body}</tbody></table></div>`;
+  document.getElementById('gCsv').onclick=()=>{
+    const {rows,nameA,nameB}=window._gCompare;
+    const head=`segment,pos,change,present_in,n_${nameA},prev_${nameA},mean_${nameA},n_${nameB},prev_${nameB},mean_${nameB},delta\n`;
+    const csv=head+rows.map(r=>[r.region,r.pos,r.change,r.present==='both'?'both':(r.present==='A'?nameA:nameB),
+      r.nA,r.prevA.toFixed(4),r.meanA.toFixed(4),r.nB,r.prevB.toFixed(4),r.meanB.toFixed(4),r.delta.toFixed(4)].join(',')).join('\n');
+    downloadText(`arbor_snp_${nameA}_vs_${nameB}.csv`.replace(/\s+/g,'_'), csv);
+  };
+}
+
+// Populate the always-available tabs with their empty/default states on first load.
+renderMapping(); renderConsensus(); renderGroups(); renderParams();
 </script>
 </body>
 </html>
