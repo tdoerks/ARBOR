@@ -60,6 +60,13 @@
   tr.changed td{color:var(--warn)}
   td.desc{white-space:normal;color:var(--muted)}
   td.val{font-variant-numeric:tabular-nums}
+  .togglebar{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:0 0 12px}
+  .ctog{cursor:pointer;user-select:none}
+  .chip.off{opacity:.35}
+  .mini{background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:2px 9px;font-size:12px;cursor:pointer}
+  .mini:hover{border-color:var(--accent)}
+  .btn{background:var(--accent);color:#fff;border:none;border-radius:7px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+  .btn:hover{filter:brightness(1.08)} .btn:disabled{opacity:.4;cursor:default;filter:none}
 </style>
 </head>
 <body>
@@ -69,23 +76,28 @@
 <main>
   <div id="drop" class="drop">
     <b>Drop ARBOR result files here</b> (or click to choose) — iVar <code>*.tsv</code>, LoFreq <code>*.vcf[.gz]</code>,
-    mosdepth <code>*.summary.txt</code> / <code>*.per-base.bed.gz</code>, IQ-TREE <code>*.treefile</code>, a metadata <code>*.csv</code>,
-    and the run's <code>pipeline_info/params.json</code>.
+    samtools <code>*.stats</code>, bowtie2 <code>*.bowtie2.log</code>, mosdepth <code>*.summary.txt</code> /
+    <code>*.per-base.bed.gz</code>, IQ-TREE <code>*.treefile</code>, consensus <code>*.fasta</code>, a metadata
+    <code>*.csv</code>, and the run's <code>pipeline_info/params.json</code>.
     <input id="file" type="file" multiple style="display:none"/>
   </div>
   <div id="loaded" class="loaded"></div>
 
   <nav>
     <button data-tab="summary" class="active">Run summary</button>
-    <button data-tab="variants">iSNVs / Variants</button>
+    <button data-tab="mapping">Mapping</button>
     <button data-tab="coverage">Coverage</button>
+    <button data-tab="variants">iSNVs / Variants</button>
+    <button data-tab="consensus">Consensus</button>
     <button data-tab="phylo">Phylogeny</button>
     <button data-tab="params">Parameters</button>
   </nav>
 
   <section id="summary" class="tab active"></section>
-  <section id="variants" class="tab"></section>
+  <section id="mapping" class="tab"></section>
   <section id="coverage" class="tab"></section>
+  <section id="variants" class="tab"></section>
+  <section id="consensus" class="tab"></section>
   <section id="phylo" class="tab"></section>
   <section id="params" class="tab"></section>
 </main>
@@ -99,6 +111,9 @@ const S = {
   meta: {},       // sample -> {col:val}
   metaCols: [],
   params: null,   // parsed pipeline_info/params.json (values actually used by the run)
+  mapping: {},    // sample -> { raw:{SN}, trim:{SN}, alnRate:Number }  (samtools stats + bowtie2 log)
+  consensus: [],  // [ {header, sample, segment, seq, len, ns} ]  parsed consensus FASTA records
+  covHidden: new Set(),  // samples toggled off in the Coverage plot
   samples: new Set(), segments: new Set(),
 };
 const palette = d3.schemeTableau10.concat(d3.schemeSet3);
@@ -176,6 +191,9 @@ async function handleFiles(list){
       if(low.endsWith('.gz') && low.includes('per-base')) await readCov(f,true);
       else if(low.includes('summary')&&low.endsWith('.txt')) await readMosSummary(f);
       else if(low.includes('per-base')&&low.endsWith('.bed')) await readCov(f,false);
+      else if(low.endsWith('.stats')||low.endsWith('.stats.gz')) await readStats(f);
+      else if(low.endsWith('.log')) await readBowtieLog(f);
+      else if(low.endsWith('.fasta')||low.endsWith('.fa')||low.endsWith('.fna')||low.endsWith('.fasta.gz')) await readConsensus(f);
       else if(low.endsWith('.tsv')) await readIvar(f);
       else if(low.endsWith('.vcf')||low.endsWith('.vcf.gz')) await readVcf(f,low.endsWith('.gz'));
       else if(low.endsWith('.treefile')||low.endsWith('.nwk')||low.endsWith('.nexus')) await readTree(f);
@@ -253,6 +271,61 @@ async function readParams(f){
   if(!Object.keys(obj).some(k=>PARAM_KEYS.has(k))) return;
   S.params=obj;
 }
+// samtools stats — the SN (summary number) section. Files are <sample>.raw.stats
+// (pre-primer-trim) or <sample>.primertrim.stats (post-trim); fall back to <sample>.stats.
+async function readStats(f){
+  const gz=f.name.toLowerCase().endsWith('.gz');
+  const txt=await readText(f,gz);
+  const m=f.name.match(/^(.+?)\.(raw|primertrim)\.stats(\.gz)?$/i);
+  const sample = m ? m[1] : f.name.replace(/\.stats(\.gz)?$/i,'');
+  const phase  = m ? (/raw/i.test(m[2]) ? 'raw' : 'trim') : 'trim';
+  const SN={};
+  for(const ln of txt.split(/\r?\n/)){
+    if(ln.startsWith('SN\t')){
+      const p=ln.split('\t'); if(p.length<3) continue;
+      const key=p[1].replace(/:$/,'').trim(); const num=parseFloat(p[2]);
+      SN[key]=isNaN(num)?p[2]:num;
+    }
+  }
+  if(!Object.keys(SN).length) return;                 // not a samtools stats file
+  S.mapping[sample]=S.mapping[sample]||{}; S.mapping[sample][phase]=SN; S.samples.add(sample);
+}
+// bowtie2 stderr log — grab the "XX.XX% overall alignment rate" line.
+async function readBowtieLog(f){
+  const txt=await readText(f,false);
+  const m=txt.match(/([\d.]+)%\s+overall alignment rate/i);
+  if(!m) return;                                       // not a bowtie2 log
+  const sample=f.name.replace(/\.bowtie2\.log$/i,'').replace(/\.log$/i,'');
+  S.mapping[sample]=S.mapping[sample]||{}; S.mapping[sample].alnRate=parseFloat(m[1]); S.samples.add(sample);
+}
+// Consensus FASTA (one or many records). Infer segment from a known segment id in
+// the header/filename, and sample from the remaining header text.
+function inferConsId(header, fname){
+  let segment='';
+  for(const sg of S.segments){ if(header.includes(sg)||fname.includes(sg)){ segment=sg; break; } }
+  if(!segment){ const fm=fname.match(/^(.+?)\.consensus\.fasta/i); if(fm && /^[A-Za-z0-9_.]+$/.test(fm[1])) segment=fm[1]; }
+  let sample=header.replace(/^Consensus[_-]/i,'');
+  if(segment) sample=sample.split(segment).join('');
+  sample=sample.replace(/[._]threshold.*$/i,'').replace(/[._](primertrim|sorted|raw|consensus)/gi,'')
+               .replace(/[_.\-]+$/,'').replace(/^[_.\-]+/,'').trim();
+  return { sample: sample||header, segment };
+}
+async function readConsensus(f){
+  const gz=f.name.toLowerCase().endsWith('.gz');
+  const txt=await readText(f,gz);
+  if(!txt.trimStart().startsWith('>')) return;         // not FASTA
+  for(const chunk of txt.split(/^>/m)){
+    if(!chunk.trim()) continue;
+    const nl=chunk.indexOf('\n');
+    const header=(nl<0?chunk:chunk.slice(0,nl)).trim();
+    const seq=(nl<0?'':chunk.slice(nl+1)).replace(/\s+/g,'');
+    if(!seq) continue;
+    const ns=(seq.match(/[Nn]/g)||[]).length;
+    const {sample,segment}=inferConsId(header,f.name);
+    S.consensus.push({header,sample,segment,seq,len:seq.length,ns,sel:true});
+    if(sample) S.samples.add(sample); if(segment) S.segments.add(segment);
+  }
+}
 
 /* ============================ chips ============================ */
 function renderChips(){
@@ -260,7 +333,9 @@ function renderChips(){
   const add=(l,n)=>{if(n)el.insertAdjacentHTML('beforeend',`<span class="chip"><b>${n}</b> ${l}</span>`);};
   add('samples',S.samples.size); add('segments',S.segments.size);
   add('variant sets',Object.keys(S.variants).length);
+  add('mapping stats',Object.keys(S.mapping).length);
   add('coverage sets',Object.keys(S.cov).length);
+  add('consensus seqs',S.consensus.length);
   add('trees',Object.keys(S.trees).length);
   add('metadata rows',Object.keys(S.meta).length);
   add('params loaded',S.params?1:0);
@@ -272,7 +347,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
   b.classList.add('active'); document.getElementById(b.dataset.tab).classList.add('active');
 });
-function renderAll(){ renderSummary(); renderVariants(); renderCoverage(); renderPhylo(); renderParams(); }
+function renderAll(){ renderSummary(); renderMapping(); renderVariants(); renderCoverage(); renderConsensus(); renderPhylo(); renderParams(); }
 const segList=()=>[...S.segments].filter(s=>!Object.keys(S.trees).includes(s)||true).sort();
 const sampList=()=>[...S.samples].sort();
 
@@ -362,21 +437,37 @@ function renderCoverage(){
     <div class="controls">Segment <select id="cSeg"></select>
       <label><input id="cLog" type="checkbox"/> log depth</label>
       ${havePB?'':'<span>(no per-base files — showing mean depth from summaries)</span>'}</div>
+    <div id="cSamples" class="togglebar"></div>
     <div id="cPlot"></div><div id="cLegend" class="legend"></div></div>`;
   const segSel=document.getElementById('cSeg');
   [...S.segments].filter(s=>!S.trees[s]||true).sort().forEach(s=>segSel.add(new Option(s,s)));
   const upd=()=>drawCoverage(segSel.value,document.getElementById('cLog').checked);
-  segSel.onchange=upd; document.getElementById('cLog').onchange=upd; upd();
+  segSel.onchange=upd; document.getElementById('cLog').onchange=upd;
+  paintCovToggles(upd); upd();
+}
+// Clickable per-sample toggles for the coverage plot (declutter to samples of interest).
+function paintCovToggles(redraw){
+  const box=document.getElementById('cSamples'); if(!box) return;
+  const samps=Object.keys(S.cov).sort();
+  box.innerHTML = `<span style="color:var(--muted)">Show:</span>`
+    + `<button class="mini" data-all="1">all</button><button class="mini" data-none="1">none</button>`
+    + samps.map(s=>`<span class="ctog chip ${S.covHidden.has(s)?'off':''}" data-s="${s}"><span class="sw" style="background:${colorFor(s)}"></span>${s}</span>`).join('');
+  box.querySelectorAll('.ctog').forEach(c=>c.onclick=()=>{
+    const s=c.dataset.s; S.covHidden.has(s)?S.covHidden.delete(s):S.covHidden.add(s);
+    paintCovToggles(redraw); redraw();
+  });
+  box.querySelector('[data-all]').onclick=()=>{ S.covHidden.clear(); paintCovToggles(redraw); redraw(); };
+  box.querySelector('[data-none]').onclick=()=>{ Object.keys(S.cov).forEach(s=>S.covHidden.add(s)); paintCovToggles(redraw); redraw(); };
 }
 function drawCoverage(seg,log){
   const wrap=d3.select('#cPlot'); wrap.selectAll('*').remove();
   const W=wrap.node().clientWidth||820,H=320,m={t:14,r:14,b:36,l:54};
-  const series=[]; for(const s of Object.keys(S.cov)){const pb=S.cov[s].perbase[seg];
+  const series=[]; for(const s of Object.keys(S.cov)){ if(S.covHidden.has(s)) continue; const pb=S.cov[s].perbase[seg];
     if(pb&&pb.length) series.push({sample:s,data:downsample(pb,1200)});}
   const svg=wrap.append('svg').attr('width',W).attr('height',H);
   if(!series.length){
     // fall back to mean-depth bars from summaries
-    const means=Object.keys(S.cov).map(s=>({sample:s,mean:(S.cov[s].summary[seg]||{}).mean})).filter(d=>d.mean!=null);
+    const means=Object.keys(S.cov).map(s=>({sample:s,mean:(S.cov[s].summary[seg]||{}).mean})).filter(d=>d.mean!=null&&!S.covHidden.has(d.sample));
     if(!means.length){wrap.append('div').attr('class','empty').text('No coverage data for this segment.');return;}
     const x=d3.scaleBand().domain(means.map(d=>d.sample)).range([m.l,W-m.r]).padding(.2);
     const y=d3.scaleLinear().domain([0,d3.max(means,d=>d.mean)]).nice().range([H-m.b,m.t]);
@@ -517,8 +608,87 @@ function renderParams(){
   el.innerHTML = banner + cards;
 }
 
-// Populate the Parameters tab with defaults on first load (before any files are dropped).
-renderParams();
+/* ============================ Mapping ============================ */
+function fmtInt(n){ return (n==null||isNaN(n))?'—':Math.round(n).toLocaleString(); }
+function fmtPct(n){ return (n==null||isNaN(n))?'—':n.toFixed(1)+'%'; }
+function renderMapping(){
+  const el=document.getElementById('mapping');
+  const samps=Object.keys(S.mapping).sort();
+  if(!samps.length){ el.innerHTML='<div class="empty">Drop samtools <code>*.stats</code> and/or bowtie2 <code>*.bowtie2.log</code> files to see per-sample mapping metrics.</div>'; return; }
+  const rows=samps.map(s=>{
+    const M=S.mapping[s], SN=M.trim||M.raw||{};        // prefer post-primer-trim (the analysis BAM)
+    const total=SN['raw total sequences'], mapped=SN['reads mapped'],
+          proper=SN['reads properly paired'], dup=SN['reads duplicated'],
+          err=SN['error rate'], ins=SN['insert size average'];
+    const alnRate = (M.alnRate!=null)?M.alnRate : (total?mapped/total*100:null);
+    const properPct = total?proper/total*100:null, dupPct = total?dup/total*100:null;
+    const phase = M.trim?'post-trim':(M.raw?'pre-trim':'—');
+    return `<tr><td><b>${pEsc(s)}</b></td>`
+      +`<td class="val">${fmtInt(total)}</td><td class="val">${fmtInt(mapped)}</td>`
+      +`<td class="val">${fmtPct(alnRate)}</td><td class="val">${fmtPct(properPct)}</td>`
+      +`<td class="val">${err==null?'—':(+err).toFixed(4)}</td>`
+      +`<td class="val">${ins==null?'—':Math.round(ins)}</td>`
+      +`<td class="val">${fmtPct(dupPct)}</td><td class="val">${phase}</td></tr>`;
+  }).join('');
+  const hasAln=Object.values(S.mapping).some(m=>m.alnRate!=null);
+  el.innerHTML=`<div class="card"><h3>Per-sample mapping metrics</h3>
+    <div class="controls">From samtools stats${hasAln?' + bowtie2 alignment rate':''}. Uses the post-primer-trim BAM where available.</div>
+    <div class="scroll"><table><thead><tr>
+      <th>Sample</th><th>Total reads</th><th>Reads mapped</th><th>% mapped</th><th>Properly paired</th><th>Error rate</th><th>Mean insert</th><th>Duplicates</th><th>Stage</th>
+    </tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
+
+/* ============================ Consensus ============================ */
+function downloadText(name,text){
+  const blob=new Blob([text],{type:'text/plain'}); const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+function renderConsensus(){
+  const el=document.getElementById('consensus');
+  if(!S.consensus.length){ el.innerHTML='<div class="empty">Drop consensus <code>*.fasta</code> files (per-segment or per-sample) to browse and download sequences.</div>'; return; }
+  const segs=[...new Set(S.consensus.map(r=>r.segment).filter(Boolean))].sort();
+  el.innerHTML=`<div class="card"><h3>Consensus sequences <span style="color:var(--muted);font-weight:400">(${S.consensus.length} loaded)</span></h3>
+    <div class="controls">
+      ${segs.length?`Segment <select id="kSeg"><option value="">all</option>${segs.map(s=>`<option>${pEsc(s)}</option>`).join('')}</select>`:''}
+      <button class="mini" id="kAll">select all</button><button class="mini" id="kNone">select none</button>
+      <span id="kCount" style="color:var(--muted)"></span>
+      <span style="flex:1"></span>
+      <button class="btn" id="kDl">⬇ Download selected FASTA</button>
+    </div>
+    <div class="scroll"><table id="kTable"></table></div></div>`;
+  const segSel=document.getElementById('kSeg');
+  const updCount=()=>{ const n=S.consensus.filter(r=>r.sel).length;
+    const c=document.getElementById('kCount'); if(c)c.textContent=`${n} selected`;
+    const dl=document.getElementById('kDl'); if(dl)dl.disabled=!n; };
+  const paint=()=>{
+    const segFilter=segSel?segSel.value:'';
+    const rows=S.consensus.map((r,i)=>({r,i})).filter(({r})=>!segFilter||r.segment===segFilter);
+    const body=rows.map(({r,i})=>{
+      const pctN=r.len?(r.ns/r.len*100):0;
+      return `<tr><td><input type="checkbox" data-i="${i}" ${r.sel?'checked':''}></td>`
+        +`<td><b>${pEsc(r.sample||'—')}</b></td><td>${pEsc(r.segment||'—')}</td>`
+        +`<td class="val">${r.len.toLocaleString()}</td>`
+        +`<td class="val">${r.ns.toLocaleString()} (${pctN.toFixed(1)}%)</td>`
+        +`<td style="color:var(--muted);max-width:320px;overflow:hidden;text-overflow:ellipsis">${pEsc(r.header)}</td></tr>`;
+    }).join('');
+    document.getElementById('kTable').innerHTML=`<thead><tr><th></th><th>Sample</th><th>Segment</th><th>Length</th><th>Ns</th><th>Header</th></tr></thead><tbody>${body}</tbody>`;
+    document.querySelectorAll('#kTable input[type=checkbox]').forEach(cb=>cb.onchange=()=>{ S.consensus[+cb.dataset.i].sel=cb.checked; updCount(); });
+    updCount();
+  };
+  if(segSel) segSel.onchange=paint;
+  document.getElementById('kAll').onclick=()=>{ S.consensus.forEach(r=>r.sel=true); paint(); };
+  document.getElementById('kNone').onclick=()=>{ S.consensus.forEach(r=>r.sel=false); paint(); };
+  document.getElementById('kDl').onclick=()=>{
+    const sel=S.consensus.filter(r=>r.sel); if(!sel.length) return;
+    const fa=sel.map(r=>`>${r.header}\n${(r.seq.match(/.{1,70}/g)||[]).join('\n')}`).join('\n')+'\n';
+    downloadText('arbor_consensus_selected.fasta', fa);
+  };
+  paint();
+}
+
+// Populate the always-available tabs with their empty/default states on first load.
+renderMapping(); renderConsensus(); renderParams();
 </script>
 </body>
 </html>
