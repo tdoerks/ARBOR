@@ -65,7 +65,7 @@ CSV header `sample,fastq_1,fastq_2`. Paired-end only.
 | 13 | Consensus (per segment) | `IVAR_CONSENSUS` | `[meta+seg, bam] + ref + save_mpileup` → `fasta` | `nf-core/ivar/consensus` |
 | 14 | Merge consensus | `CAT_CAT` | `[seg, [fastas…]]` → one fasta/segment | `nf-core/cat/cat` |
 | 15 | Select segment recs | `SEQKIT_GREP` | `[meta, seqs] + pattern` → per-segment fasta | `nf-core/seqkit/grep` |
-| 16 | MSA (+context) | `MAFFT_ALIGN` | `[seg, fasta] + [ctx, context_fasta]` (`--add`) → alignment | `nf-core/mafft/align` |
+| 16 | MSA (+context) | `MAFFT_ALIGN` | `[seg, fasta] + per-segment `[ctx, S/M/L.fasta]` (`--add`) → alignment | `nf-core/mafft/align` |
 | 17 | Phylogeny (per segment) | `IQTREE` | `[seg, aln, []]` → `treefile` | `nf-core/iqtree` |
 | 18 | Report | `MULTIQC` | fastqc + fastp + samtools + mosdepth + ivar → report | `nf-core/multiqc` |
 
@@ -79,7 +79,7 @@ ch_ref     = [ [id:'ref'], file(params.reference) ]            // value
 BOWTIE2_BUILD(ch_ref) -> ch_index   (value, .first())
 SAMTOOLS_FAIDX(ch_ref) -> ch_fai    (value, .first())
 ch_primer_bed = file(params.primer_bed)                        // bare path value
-ch_context    = params.context_fasta ? [[id:'ctx'], file(params.context_fasta)] : [[],[]]
+ch_context    = per-segment: channel.fromList(segs).map{ seg -> ctx file for seg or [] }  // joined to MSA by segment
 ```
 
 Per-sample mapping & trim:
@@ -128,7 +128,7 @@ IVAR_VARIANTS/TRIM logs (all natively MultiQC-supported).
 | `reference` | — | required path | RVFV S/M/L FASTA |
 | `primer_bed` | — | required path | tiling primer BED |
 | `segments` | `['S','M','L']` | configurable list | reference record IDs |
-| `context_fasta` | null | configurable path | external NCBI strains for tree |
+| `context_dir` | null | configurable path | dir of per-segment outgroup/reference FASTAs (S/M/L.fasta) |
 | `adapter_fasta` | null (auto-detect) | configurable | fastp; CLC uses Illumina universal adapters |
 | `fastp_qualified_quality` | 13 | configurable | CLC quality limit 0.05 ≈ Q13 |
 | `fastp_length_required` | 50 | configurable | CLC min length 50 |
@@ -172,7 +172,7 @@ Viral genomes are tiny (S/M/L ≈ 12 kb total), so most steps are light. Beocat 
 
 - [x] Per-segment phylogeny (S/M/L separate trees) — segmented virus / reassortment. User-confirmed (recommended).
 - [x] Both variant callers (iVar variants + LoFreq) output for cross-check. User-confirmed.
-- [x] Optional `--context_fasta` external strains folded into the MSA via MAFFT `--add`. User-confirmed.
+- [x] Optional `--context_dir` per-segment outgroup/reference strains folded into each segment's MSA via MAFFT `--add`. User-confirmed.
 - [x] Bowtie2 (`--local`) mapper. User-confirmed.
 - [ ] `params.segments` record IDs must match the reference FASTA headers exactly → mark `// REVIEW`.
 - [ ] LoFreq pre-processing (`indelqual`/`alnqual`) — confirm necessity at build.

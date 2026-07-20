@@ -66,6 +66,27 @@ nextflow run tdoerks/arbor \
 > [!WARNING]
 > Please provide pipeline parameters via the CLI or Nextflow `-params-file` option. Custom config files including those provided by the `-c` Nextflow option can be used to provide any configuration _**except for parameters**_; see [docs](https://nf-co.re/docs/running/run-pipelines#using-parameter-files).
 
+## Phylogenetic context / outgroups
+
+By default each per-segment tree (S/M/L) is built only from your run's own consensus sequences. To
+root the trees and compare against known strains, drop **per-segment** FASTAs into a directory and
+point `--context_dir` at it:
+
+```text
+context/
+├── S.fasta   # folded into the S-segment tree only
+├── M.fasta   # M-segment tree
+└── L.fasta   # L-segment tree
+```
+
+```bash
+nextflow run tdoerks/arbor --input samplesheet.csv --outdir results --context_dir context
+```
+
+Each segment's sequences are aligned in via MAFFT `--add`, so an S reference never contaminates the
+M/L alignments; any segment without a file is aligned plain. Record headers become tree-tip labels.
+See [`assets/context/README.md`](assets/context/README.md) for a suggested RVFV/MP-12 set.
+
 ## Credits
 
 tdoerks/arbor was originally written by tdoerks.

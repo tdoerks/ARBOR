@@ -125,7 +125,7 @@ tail -f arbor_head_*.log    # live Nextflow progress
 | `--reference` | bundled RVFV MP-12 | swap for another virus |
 | `--primer_bed` | bundled `rvfv_amplicons_v4.bed` | your tiling scheme |
 | `--segments` | `NC_014395_S,NC_014396_M,NC_014397_L` | **must match reference FASTA headers** |
-| `--context_fasta` | none | external NCBI strains to fold into the trees |
+| `--context_dir` | none | dir of per-segment outgroup/reference FASTAs (`S.fasta`/`M.fasta`/`L.fasta`) folded into each segment's tree; see [`assets/context/README.md`](../assets/context/README.md) |
 | `--ivar_variants_min_freq` / `_min_depth` / `_min_qual` | 0.01 / 250 / 20 | iVar iSNV thresholds |
 | `--lofreq_sig` / `--lofreq_min_cov` | 0.005 / 100 | LoFreq thresholds |
 | `--consensus_min_depth` | 10 | below this → N |
