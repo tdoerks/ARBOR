@@ -67,6 +67,19 @@
   .mini:hover{border-color:var(--accent)}
   .btn{background:var(--accent);color:#fff;border:none;border-radius:7px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
   .btn:hover{filter:brightness(1.08)} .btn:disabled{opacity:.4;cursor:default;filter:none}
+  .gwrap{display:flex;gap:12px;flex-wrap:wrap;margin:10px 0}
+  .gbin{flex:1;min-width:190px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;min-height:76px;transition:.12s}
+  .gbin.drop{border-color:var(--accent);background:#1d2c35}
+  .gbin.unassigned{background:var(--panel);border-style:dashed}
+  .gbin .gh{margin:0 0 8px;display:flex;align-items:center;gap:6px}
+  .gbin .gh .sw{flex:0 0 auto}
+  .gbin .gh input{background:none;border:none;border-bottom:1px solid transparent;color:var(--ink);font-size:13px;font-weight:700;width:100px}
+  .gbin .gh input:focus{outline:none;border-bottom-color:var(--line)}
+  .gbin .gh .cnt{color:var(--muted);font-weight:400;font-size:11px}
+  .gbin .gh .x{margin-left:auto;color:var(--muted);cursor:pointer;border:none;background:none;font-size:14px}
+  .gbin .gh .x:hover{color:var(--bad)}
+  .gchip{display:inline-block;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:3px 9px;margin:3px;font-size:12px;cursor:grab}
+  .gchip:active{cursor:grabbing} .gchip.drag{opacity:.4}
 </style>
 </head>
 <body>
@@ -88,6 +101,7 @@
     <button data-tab="mapping">Mapping</button>
     <button data-tab="coverage">Coverage</button>
     <button data-tab="variants">iSNVs / Variants</button>
+    <button data-tab="groups">SNP Groups</button>
     <button data-tab="consensus">Consensus</button>
     <button data-tab="phylo">Phylogeny</button>
     <button data-tab="params">Parameters</button>
@@ -97,6 +111,7 @@
   <section id="mapping" class="tab"></section>
   <section id="coverage" class="tab"></section>
   <section id="variants" class="tab"></section>
+  <section id="groups" class="tab"></section>
   <section id="consensus" class="tab"></section>
   <section id="phylo" class="tab"></section>
   <section id="params" class="tab"></section>
@@ -114,6 +129,7 @@ const S = {
   mapping: {},    // sample -> { raw:{SN}, trim:{SN}, alnRate:Number }  (samtools stats + bowtie2 log)
   consensus: [],  // [ {header, sample, segment, seq, len, ns} ]  parsed consensus FASTA records
   covHidden: new Set(),  // samples toggled off in the Coverage plot
+  grouping: null, // { groups:[{id,name}], assign:{sample:gid} }  for the SNP Groups tab
   samples: new Set(), segments: new Set(),
 };
 const palette = d3.schemeTableau10.concat(d3.schemeSet3);
@@ -347,7 +363,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
   b.classList.add('active'); document.getElementById(b.dataset.tab).classList.add('active');
 });
-function renderAll(){ renderSummary(); renderMapping(); renderVariants(); renderCoverage(); renderConsensus(); renderPhylo(); renderParams(); }
+function renderAll(){ renderSummary(); renderMapping(); renderVariants(); renderCoverage(); renderGroups(); renderConsensus(); renderPhylo(); renderParams(); }
 const segList=()=>[...S.segments].filter(s=>!Object.keys(S.trees).includes(s)||true).sort();
 const sampList=()=>[...S.samples].sort();
 
@@ -687,8 +703,159 @@ function renderConsensus(){
   paint();
 }
 
+/* ============================ SNP Groups ============================
+   Drag samples into groups, then compare their SNPs. All client-side: uses the
+   variant calls already in S.variants. */
+function variantKey(v){ return `${v.region}:${v.pos}:${v.ref}>${v.alt}`; }
+function ensureGrouping(){
+  if(S.grouping) return;
+  S.grouping={ groups:[{id:'g1',name:'Group 1'},{id:'g2',name:'Group 2'}], assign:{} };
+}
+function groupColor(i){ return palette[i%palette.length]; }
+function samplesInGroup(gid){ return [...S.samples].filter(s=>S.grouping.assign[s]===gid).sort(); }
+function unassignedSamples(){ return [...S.samples].filter(s=>{const g=S.grouping.assign[s]; return !g || !S.grouping.groups.some(x=>x.id===g);}).sort(); }
+
+function renderGroups(){
+  const el=document.getElementById('groups');
+  const withVars=[...S.samples].filter(s=>S.variants[s]&&S.variants[s].length);
+  if(!withVars.length){ el.innerHTML='<div class="empty">Load variant files (iVar <code>*.tsv</code> / LoFreq <code>*.vcf</code>) to compare SNPs across sample groups.</div>'; return; }
+  ensureGrouping();
+  const G=S.grouping;
+  const metaSel = S.metaCols.length
+    ? `Auto-group by <select id="gAuto"><option value="">— metadata column —</option>${S.metaCols.map(c=>`<option>${pEsc(c)}</option>`).join('')}</select>` : '';
+  const binHtml = (gid,name,i,unassigned)=>{
+    const samps = unassigned ? unassignedSamples() : samplesInGroup(gid);
+    const chips = samps.map(s=>`<span class="gchip" draggable="true" data-s="${pEsc(s)}">${pEsc(s)}</span>`).join('')||'<span style="color:var(--muted);font-size:12px">drag samples here</span>';
+    const head = unassigned
+      ? `<div class="gh"><b>Unassigned</b> <span class="cnt">${samps.length}</span></div>`
+      : `<div class="gh"><span class="sw" style="background:${groupColor(i)}"></span><input value="${pEsc(name)}" data-gid="${gid}" class="gname"><span class="cnt">${samps.length}</span><button class="x" data-del="${gid}" title="remove group">✕</button></div>`;
+    return `<div class="gbin ${unassigned?'unassigned':''}" data-gid="${unassigned?'':gid}">${head}${chips}</div>`;
+  };
+  const bins = G.groups.map((g,i)=>binHtml(g.id,g.name,i,false)).join('') + binHtml('',null,0,true);
+  const groupOpts = G.groups.map(g=>`<option value="${g.id}">${pEsc(g.name)}</option>`).join('');
+
+  el.innerHTML=`<div class="card"><h3>Group samples</h3>
+    <div class="controls"><button class="mini" id="gAdd">+ Add group</button>${metaSel}
+      <span style="color:var(--muted)">Drag sample chips between groups.</span></div>
+    <div class="gwrap" id="gWrap">${bins}</div></div>
+    <div class="card"><h3>Compare SNPs between two groups</h3>
+    <div class="controls">
+      <select id="gA">${groupOpts}</select> vs <select id="gB">${groupOpts}</select>
+      <label><input type="checkbox" id="gPass" checked> PASS only</label>
+      <label>min prevalence <input type="number" id="gPrev" value="0" min="0" max="1" step="0.1" style="width:64px"></label>
+      <button class="btn" id="gRun">Run comparison</button>
+    </div>
+    <div id="gResult"><div class="empty">Assign samples to two groups, then Run comparison.</div></div></div>`;
+
+  // group name / add / delete
+  el.querySelectorAll('.gname').forEach(inp=>inp.onchange=()=>{ const g=G.groups.find(x=>x.id===inp.dataset.gid); if(g){g.name=inp.value||g.name;} renderGroups(); });
+  el.querySelectorAll('[data-del]').forEach(btn=>btn.onclick=()=>{ const gid=btn.dataset.del;
+    G.groups=G.groups.filter(x=>x.id!==gid); Object.keys(G.assign).forEach(s=>{if(G.assign[s]===gid)delete G.assign[s];}); renderGroups(); });
+  document.getElementById('gAdd').onclick=()=>{ const n=G.groups.length+1; G.groups.push({id:'g'+Date.now(),name:'Group '+n}); renderGroups(); };
+  const gAuto=document.getElementById('gAuto');
+  if(gAuto) gAuto.onchange=()=>{ if(!gAuto.value) return; autoGroupByMeta(gAuto.value); renderGroups(); };
+
+  // drag & drop
+  el.querySelectorAll('.gchip').forEach(ch=>{
+    ch.addEventListener('dragstart',e=>{ e.dataTransfer.setData('text/plain',ch.dataset.s); ch.classList.add('drag'); });
+    ch.addEventListener('dragend',()=>ch.classList.remove('drag'));
+  });
+  el.querySelectorAll('.gbin').forEach(bin=>{
+    bin.addEventListener('dragover',e=>{ e.preventDefault(); bin.classList.add('drop'); });
+    bin.addEventListener('dragleave',()=>bin.classList.remove('drop'));
+    bin.addEventListener('drop',e=>{ e.preventDefault(); bin.classList.remove('drop');
+      const s=e.dataTransfer.getData('text/plain'); const gid=bin.dataset.gid;
+      if(gid) S.grouping.assign[s]=gid; else delete S.grouping.assign[s];
+      renderGroups(); });
+  });
+
+  // comparison
+  const gA=document.getElementById('gA'), gB=document.getElementById('gB');
+  if(G.groups[1]) gB.value=G.groups[1].id;
+  document.getElementById('gRun').onclick=()=>{
+    runComparison(gA.value, gB.value,
+      document.getElementById('gPass').checked, parseFloat(document.getElementById('gPrev').value)||0);
+  };
+}
+
+function autoGroupByMeta(col){
+  const G=S.grouping; const seen={};
+  // rebuild groups from the distinct values of the chosen metadata column
+  G.groups=[]; G.assign={};
+  [...S.samples].forEach(s=>{
+    const v=(S.meta[s]||{})[col]; if(v==null||v==='') return;
+    if(!seen[v]){ seen[v]={id:'g'+Object.keys(seen).length+'_'+Date.now(), name:String(v)}; G.groups.push(seen[v]); }
+    G.assign[s]=seen[v].id;
+  });
+  if(!G.groups.length) G.groups=[{id:'g1',name:'Group 1'},{id:'g2',name:'Group 2'}];
+}
+
+// Aggregate a group's variants: key -> {n samples with it, sumFreq}. Mean over the
+// whole group (absent treated as 0). Returns {map, size}.
+function groupVariants(gid, passOnly){
+  const samps=samplesInGroup(gid); const map={};
+  for(const s of samps){
+    for(const v of (S.variants[s]||[])){
+      if(passOnly && !v.pass) continue;
+      const k=variantKey(v); const f=isNaN(v.freq)?0:v.freq;
+      if(!map[k]) map[k]={n:0,sum:0,region:v.region,pos:v.pos,ref:v.ref,alt:v.alt};
+      map[k].n++; map[k].sum+=f;
+    }
+  }
+  return {map, size:samps.length};
+}
+function runComparison(gidA, gidB, passOnly, minPrev){
+  const wrap=document.getElementById('gResult');
+  if(gidA===gidB){ wrap.innerHTML='<div class="empty">Pick two different groups.</div>'; return; }
+  const A=groupVariants(gidA,passOnly), B=groupVariants(gidB,passOnly);
+  if(!A.size||!B.size){ wrap.innerHTML='<div class="empty">Both groups need at least one sample with variants.</div>'; return; }
+  const nameA=S.grouping.groups.find(g=>g.id===gidA).name, nameB=S.grouping.groups.find(g=>g.id===gidB).name;
+  const keys=new Set([...Object.keys(A.map),...Object.keys(B.map)]);
+  const rows=[]; let shared=0,aOnly=0,bOnly=0;
+  keys.forEach(k=>{
+    const a=A.map[k], b=B.map[k];
+    const nA=a?a.n:0, nB=b?b.n:0;
+    const prevA=nA/A.size, prevB=nB/B.size;
+    if(Math.max(prevA,prevB)<minPrev) return;
+    const meanA=(a?a.sum:0)/A.size, meanB=(b?b.sum:0)/B.size;
+    const inA=nA>0, inB=nB>0;
+    if(inA&&inB) shared++; else if(inA) aOnly++; else bOnly++;
+    const ref=(a||b).ref, alt=(a||b).alt, region=(a||b).region, pos=(a||b).pos;
+    rows.push({region,pos,change:`${ref}>${alt}`,nA,nB,prevA,prevB,meanA,meanB,delta:meanB-meanA,
+      present: inA&&inB?'both':(inA?'A':'B')});
+  });
+  rows.sort((x,y)=>Math.abs(y.delta)-Math.abs(x.delta));
+  window._gCompare={rows,nameA,nameB};   // for CSV download
+
+  const cap=800;
+  const body=rows.slice(0,cap).map(r=>{
+    const badge=r.present==='both'?'':`<span class="badge" style="background:${r.present==='A'?'var(--accent2)':'var(--warn)'}">${r.present==='A'?nameA:nameB} only</span>`;
+    return `<tr><td>${pEsc(r.region)}</td><td class="val">${r.pos}</td><td>${pEsc(r.change)}${badge}</td>`
+      +`<td class="val">${r.nA} (${(r.prevA*100).toFixed(0)}%)</td><td class="val">${(r.meanA*100).toFixed(1)}%</td>`
+      +`<td class="val">${r.nB} (${(r.prevB*100).toFixed(0)}%)</td><td class="val">${(r.meanB*100).toFixed(1)}%</td>`
+      +`<td class="val" style="color:${r.delta>0?'var(--accent)':'var(--bad)'}">${r.delta>0?'+':''}${(r.delta*100).toFixed(1)}%</td></tr>`;
+  }).join('');
+  wrap.innerHTML=`<div class="kpi" style="margin-bottom:12px">
+      <div class="box"><div class="n">${shared}</div><div class="l">shared</div></div>
+      <div class="box"><div class="n">${aOnly}</div><div class="l">${pEsc(nameA)} only</div></div>
+      <div class="box"><div class="n">${bOnly}</div><div class="l">${pEsc(nameB)} only</div></div>
+      <div class="box"><div class="n">${rows.length}</div><div class="l">positions</div></div></div>
+    <div class="controls"><span style="color:var(--muted)">Δ = mean freq in <b>${pEsc(nameB)}</b> − <b>${pEsc(nameA)}</b> (sorted by |Δ|). ${rows.length>cap?`Showing top ${cap}.`:''}</span>
+      <span style="flex:1"></span><button class="mini" id="gCsv">⬇ Download full table (CSV)</button></div>
+    <div class="scroll"><table><thead><tr>
+      <th>Segment</th><th>Pos</th><th>Change</th><th>n ${pEsc(nameA)}</th><th>mean ${pEsc(nameA)}</th><th>n ${pEsc(nameB)}</th><th>mean ${pEsc(nameB)}</th><th>Δ freq</th>
+    </tr></thead><tbody>${body}</tbody></table></div>`;
+  document.getElementById('gCsv').onclick=()=>{
+    const {rows,nameA,nameB}=window._gCompare;
+    const head=`segment,pos,change,present_in,n_${nameA},prev_${nameA},mean_${nameA},n_${nameB},prev_${nameB},mean_${nameB},delta\n`;
+    const csv=head+rows.map(r=>[r.region,r.pos,r.change,r.present==='both'?'both':(r.present==='A'?nameA:nameB),
+      r.nA,r.prevA.toFixed(4),r.meanA.toFixed(4),r.nB,r.prevB.toFixed(4),r.meanB.toFixed(4),r.delta.toFixed(4)].join(',')).join('\n');
+    downloadText(`arbor_snp_${nameA}_vs_${nameB}.csv`.replace(/\s+/g,'_'), csv);
+  };
+}
+
 // Populate the always-available tabs with their empty/default states on first load.
-renderMapping(); renderConsensus(); renderParams();
+renderMapping(); renderConsensus(); renderGroups(); renderParams();
 </script>
 </body>
 </html>
