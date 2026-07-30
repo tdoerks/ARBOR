@@ -347,6 +347,9 @@
         },
         "skip_phylogeny": {
             "type": "boolean"
+        },
+        "skip_dashboard": {
+            "type": "boolean"
         }
     }
 }
