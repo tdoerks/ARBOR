@@ -20,29 +20,27 @@ IMPORTANT quirk of ARBOR's per-segment iVar consensus files:
     lengths, and only then patches. Without slicing you would emit three bloated
     11979-bp sequences and destroy the coordinate frame.
 
-WHY the output stays in the CONSENSUS coordinate frame (this is the important bit):
-    The A03 consensus was called against the wildtype reference (rvfv_reference.fa),
-    so each segment slice already lives in that reference's coordinate system: same
-    per-contig lengths, same headers (NC_014395_S / NC_014396_M / NC_014397_L). The
-    primer BED (rvfv_amplicons_v4.bed) is written in those same per-contig
-    coordinates, and iVar trim matches BED chrom names to the reference headers.
-    Therefore the patched output:
-        * keeps the segment IDs NC_014395_S / NC_014396_M / NC_014397_L
-        * keeps each segment's length equal to the wildtype contig length
-    so the existing BED and the pipeline's default --segments keep working with NO
-    changes. MP-12 is only consulted to supply bases at N positions; it never
-    changes the coordinate frame (MP-12 indels vs the consensus are absorbed by the
-    pairwise alignment and do not shift output positions).
+WHY the output is written in the MP-12 REFERENCE coordinate frame:
+    MP-12 and the wildtype reference have identical per-segment lengths
+    (S=1690, M=3885, L=6404), and the primer BED (rvfv_amplicons_v4.bed) is written
+    in those per-contig coordinates. iVar consensus can add a base (the S file came
+    out 11980 vs 11979), so writing the output in the MP-12 frame -- exactly one
+    output base per non-gap MP-12 column -- GUARANTEES each segment is its exact
+    wildtype length, keeping the BED and the pipeline's default --segments valid.
+    The tradeoff: an A03 insertion relative to MP-12 is dropped, which is the right
+    call for coordinate stability (a lone consensus insertion is low-confidence).
+    Output keeps the segment IDs NC_014395_S / NC_014396_M / NC_014397_L.
 
 WHAT it does, per segment (S, M, L):
     1. Slice the segment's real region out of the full-genome ivar file, using the
-       wildtype reference for the concat order / offsets.
+       wildtype reference for the concat order / offsets (last contig sliced to EOF
+       to absorb iVar's extra base).
     2. MAFFT-align the MP-12 segment to that A03 consensus slice.
-    3. Walk the alignment in consensus coordinates:
-         - consensus has a real base  -> keep the A03 base (preserves real calls/SNVs)
-         - consensus has an N         -> substitute the aligned MP-12 base if present
-         - consensus has a gap ('-')  -> drop (keeps output in consensus frame)
-    4. Emit the patched segment under its original NC_ id.
+    3. Walk the alignment in MP-12 (reference) coordinates:
+         - MP-12 has a gap ('-')      -> drop (consensus insertion; keeps ref frame)
+         - consensus base is real     -> keep the A03 base (preserves real calls/SNVs)
+         - consensus is N or gap      -> substitute the aligned MP-12 base
+    4. Emit the patched segment (exact wildtype length) under its original NC_ id.
 
 USAGE (on Beocat, from anywhere):
     module load MAFFT 2>/dev/null || module load mafft 2>/dev/null   # provide `mafft`
@@ -131,15 +129,23 @@ def mafft_align(ref_id, ref_seq, cons_id, cons_seq):
 
 
 def patch_segment(ref_aln, cons_aln):
-    """Walk the alignment in consensus coordinates, filling N's from ref."""
+    """Walk the alignment in REFERENCE (MP-12) coordinates.
+
+    Output length == number of non-gap MP-12 columns == len(MP-12 segment), so the
+    result is always the exact wildtype segment length and the primer BED stays
+    valid regardless of insertions iVar may have introduced in the consensus.
+        - MP-12 has a gap ('-')      -> drop (consensus insertion; keeps ref frame)
+        - consensus base is real     -> keep the A03 base (preserves SNVs)
+        - consensus is N or gap      -> fill from the MP-12 base
+    """
     out = []
     for r, c in zip(ref_aln, cons_aln):
-        if c == "-":
-            continue                      # gap in consensus -> stay in consensus frame
-        if c == "N" and r not in ("-", "N"):
-            out.append(r)                 # fill N with the aligned MP-12 base
+        if r == "-":
+            continue                      # insertion in consensus -> drop, stay in ref frame
+        if c in ("N", "-"):
+            out.append(r)                 # no confident A03 base here -> fill from MP-12
         else:
-            out.append(c)                 # keep the real A03 base (or unfillable N)
+            out.append(c)                 # keep the real A03 base
     return "".join(out)
 
 
@@ -153,6 +159,7 @@ def main():
     # (its header order) and each contig's length.
     wt_records = read_fasta(wt_ref)
     offsets, total_len = concat_offsets(wt_records)
+    last_contig = wt_records[-1][0]   # slice this one to EOF (absorbs iVar's +1)
     print("Consensus frame (from %s):" % os.path.basename(wt_ref))
     for cid, seq in wt_records:
         start, length = offsets[cid]
@@ -169,23 +176,30 @@ def main():
                 sys.exit("MP-12 id %s not found in %s" % (mp12_id, mp12_ref))
 
             start, seg_len = offsets[out_id]
+            mp12_seq = mp12_seqs[mp12_id]
 
             # The ivar file is the FULL concatenated genome; slice this segment out.
+            # iVar may add a base (S came out 11980 vs 11979), so slice the LAST
+            # contig to EOF and tolerate a small total-length drift -- the ref-frame
+            # patching below forces the output back to the exact segment length.
             full = list(fasta_dict(os.path.join(consensus_dir, cons_file)).values())[0]
-            if len(full) != total_len:
+            drift = len(full) - total_len
+            if abs(drift) > 5:
                 sys.exit(
-                    "%s: ivar file length %d != wildtype total %d; concat frame "
-                    "mismatch, aborting." % (cons_file, len(full), total_len)
+                    "%s: ivar file length %d differs from wildtype total %d by %d; "
+                    "concat frame mismatch, aborting." % (cons_file, len(full), total_len, drift)
                 )
-            cons_seg = full[start:start + seg_len]
+            end = len(full) if out_id == last_contig else start + seg_len
+            cons_seg = full[start:end]
 
-            aln = mafft_align(mp12_id, mp12_seqs[mp12_id], out_id, cons_seg)
+            aln = mafft_align(mp12_id, mp12_seq, out_id, cons_seg)
             patched = patch_segment(aln[mp12_id], aln[out_id])
 
-            if len(patched) != seg_len:
+            # Ref-frame output must equal the MP-12 segment length (== wildtype len).
+            if len(patched) != len(mp12_seq) or len(patched) != seg_len:
                 sys.exit(
-                    "%s: patched length %d != expected segment length %d; BED "
-                    "coordinates would break, aborting." % (out_id, len(patched), seg_len)
+                    "%s: patched length %d != MP-12 %d / wildtype %d; BED coordinates "
+                    "would break, aborting." % (out_id, len(patched), len(mp12_seq), seg_len)
                 )
 
             n_before = cons_seg.count("N")
