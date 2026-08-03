@@ -86,15 +86,25 @@ def merge_segment_fastas(seg_files):
 
     Each *.consensus.fasta file (e.g. NC_014396_M.consensus.fasta) contains one
     record per sample. This function groups records across S, M, L by sample name,
-    strips flanking N-pads from each segment, then concatenates in L->M->S order
-    (standard RVFV convention) to produce one whole-genome record per sample.
+    strips flanking N-pads from each segment, then emits three separate records per
+    sample in L->M->S order (matching the reference FASTA structure):
 
-    Returns the merged FASTA as a byte string named 'consensus_whole_genome.fasta'.
+        >R1D101_NC_014397_L
+        GCTA...  (6404 bp)
+        >R1D101_NC_014396_M
+        ACGT...  (3885 bp)
+        >R1D101_NC_014395_S
+        TTGA...  (1690 bp)
+
+    The dashboard's readConsensus parser picks up the segment name from the header
+    and groups records by sample, so all three segments appear together per sample
+    in the Consensus tab.
     """
     import re
 
     # segment sort order: L first, then M, then S (largest -> smallest)
     SEG_ORDER = {"NC_014397_L": 0, "NC_014396_M": 1, "NC_014395_S": 2}
+    SEG_ID = {0: "NC_014397_L", 1: "NC_014396_M", 2: "NC_014395_S"}
 
     def seg_key(fname):
         for seg, rank in SEG_ORDER.items():
@@ -102,34 +112,39 @@ def merge_segment_fastas(seg_files):
                 return rank
         return 99
 
+    def seg_name(fname):
+        for seg in SEG_ORDER:
+            if seg in fname:
+                return seg
+        return fname.replace(".consensus.fasta", "")
+
     def sample_from_header(h):
         # iVar header: >Consensus_<SAMPLE>_<SEG_ID>_threshold_...
-        # strip the leading >Consensus_ and trailing _<SEG>_threshold_...
         h = h.lstrip(">")
         h = re.sub(r'^Consensus_', '', h)
         h = re.sub(r'_NC_\d+_[SML].*$', '', h, flags=re.IGNORECASE)
         return h
 
-    # collect {sample: {seg_fname: seq}} across all segment files
+    # collect {sample: {seg_fname: (seg_name, seq)}}
     by_sample = {}
     for fname, raw in sorted(seg_files, key=lambda x: seg_key(x[0])):
+        sname = seg_name(fname)
         for header, seq in parse_fasta(raw):
             seq = seq.strip("Nn")           # strip flanking N-pads
             sample = sample_from_header(header)
-            by_sample.setdefault(sample, {})[fname] = seq
+            by_sample.setdefault(sample, {})[fname] = (sname, seq)
 
-    # emit one record per sample: L + M + S concatenated
+    # emit three records per sample in L->M->S order
     out_lines = []
     for sample in sorted(by_sample):
         segs = by_sample[sample]
-        # sort segment sequences L->M->S
         ordered = sorted(segs.items(), key=lambda kv: seg_key(kv[0]))
-        whole = "".join(seq for _, seq in ordered)
-        out_lines.append(f">{sample}")
-        out_lines.append(whole)
+        for _, (sname, seq) in ordered:
+            out_lines.append(f">{sample}_{sname}")
+            out_lines.append(seq)
 
     n_samples = len(by_sample)
-    print(f"  merged {len(seg_files)} segment files -> {n_samples} whole-genome records (L+M+S)")
+    print(f"  merged {len(seg_files)} segment files -> {n_samples} samples, 3 records each (L, M, S)")
     return "\n".join(out_lines).encode("utf-8")
 
 
