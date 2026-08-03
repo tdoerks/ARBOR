@@ -62,34 +62,75 @@ def wanted(name):
     )
 
 
-def trim_consensus_ns(raw_bytes):
-    """Strip flanking N-runs from every record in a FASTA byte string.
 
-    iVar writes per-segment consensus against the full multi-contig reference, so
-    each record is full-genome length (~11,979 bp for RVFV) with the real segment
-    bases in the middle and N-padding on either side (e.g. NC_014395_S has ~10,289
-    leading N's + 1,690 real bases). Trimming the flanks leaves each record at its
-    natural segment length. Internal N's survive because .strip('Nn') only removes
-    N's at the very start and end of the sequence.
-    """
-    out = []
+def parse_fasta(raw_bytes):
+    """Parse a FASTA byte string into [(header, seq), ...]."""
+    records = []
     header = None
     seq_lines = []
     for line in raw_bytes.decode("utf-8", errors="replace").splitlines():
         if line.startswith(">"):
             if header is not None:
-                seq = "".join(seq_lines).strip("Nn")
-                out.append(header)
-                out.append(seq)
+                records.append((header, "".join(seq_lines)))
             header = line
             seq_lines = []
         else:
             seq_lines.append(line.strip())
     if header is not None:
-        seq = "".join(seq_lines).strip("Nn")
-        out.append(header)
-        out.append(seq)
-    return "\n".join(out).encode("utf-8")
+        records.append((header, "".join(seq_lines)))
+    return records
+
+
+def merge_segment_fastas(seg_files):
+    """Merge per-segment *.consensus.fasta files into one per-sample FASTA.
+
+    Each *.consensus.fasta file (e.g. NC_014396_M.consensus.fasta) contains one
+    record per sample. This function groups records across S, M, L by sample name,
+    strips flanking N-pads from each segment, then concatenates in L->M->S order
+    (standard RVFV convention) to produce one whole-genome record per sample.
+
+    Returns the merged FASTA as a byte string named 'consensus_whole_genome.fasta'.
+    """
+    import re
+
+    # segment sort order: L first, then M, then S (largest -> smallest)
+    SEG_ORDER = {"NC_014397_L": 0, "NC_014396_M": 1, "NC_014395_S": 2}
+
+    def seg_key(fname):
+        for seg, rank in SEG_ORDER.items():
+            if seg in fname:
+                return rank
+        return 99
+
+    def sample_from_header(h):
+        # iVar header: >Consensus_<SAMPLE>_<SEG_ID>_threshold_...
+        # strip the leading >Consensus_ and trailing _<SEG>_threshold_...
+        h = h.lstrip(">")
+        h = re.sub(r'^Consensus_', '', h)
+        h = re.sub(r'_NC_\d+_[SML].*$', '', h, flags=re.IGNORECASE)
+        return h
+
+    # collect {sample: {seg_fname: seq}} across all segment files
+    by_sample = {}
+    for fname, raw in sorted(seg_files, key=lambda x: seg_key(x[0])):
+        for header, seq in parse_fasta(raw):
+            seq = seq.strip("Nn")           # strip flanking N-pads
+            sample = sample_from_header(header)
+            by_sample.setdefault(sample, {})[fname] = seq
+
+    # emit one record per sample: L + M + S concatenated
+    out_lines = []
+    for sample in sorted(by_sample):
+        segs = by_sample[sample]
+        # sort segment sequences L->M->S
+        ordered = sorted(segs.items(), key=lambda kv: seg_key(kv[0]))
+        whole = "".join(seq for _, seq in ordered)
+        out_lines.append(f">{sample}")
+        out_lines.append(whole)
+
+    n_samples = len(by_sample)
+    print(f"  merged {len(seg_files)} segment files -> {n_samples} whole-genome records (L+M+S)")
+    return "\n".join(out_lines).encode("utf-8")
 
 
 def collect(results_dir):
@@ -99,9 +140,15 @@ def collect(results_dir):
     tree (ivar/, lofreq/, ...) and a flat directory of Nextflow-staged files.
     *.gz inputs are decompressed and renamed (drop .gz) so the browser needs no
     pako to read the embedded data.
+
+    *.consensus.fasta files (one per segment, full-genome-length with N-padding)
+    are merged into a single per-sample whole-genome FASTA (L+M+S, flanking N-pads
+    stripped) so the Consensus tab shows one entry per sample rather than three.
     """
     items = []
     seen = set()
+    seg_fastas = []   # [(fname, raw_bytes)] for *.consensus.fasta files
+
     for root, _dirs, files in os.walk(results_dir):
         for fname in sorted(files):
             if not wanted(fname) or fname in seen:
@@ -112,21 +159,24 @@ def collect(results_dir):
             if base.endswith(".gz"):
                 try:
                     raw = gzip.decompress(raw)
-                    base = base[:-3]            # drop .gz so the parser takes the plain path
+                    base = base[:-3]
                 except OSError:
-                    pass                         # not actually gzipped; embed as-is
+                    pass
             if base in seen:
                 continue
-            # Strip flanking N-runs from consensus FASTA records. iVar writes per-segment
-            # consensus against the full multi-contig reference, so each record is full-
-            # genome length (~11,979 bp) with the real segment bases in the middle and
-            # structural N-padding on either side. Trimming the flanking N's leaves each
-            # record at its natural segment length with genuine coverage-gap N's intact
-            # (they are flanked by real bases, so .strip('Nn') leaves them alone).
             if base.endswith(".consensus.fasta"):
-                raw = trim_consensus_ns(raw)
+                seg_fastas.append((base, raw))
+                seen.add(base)
+                continue                     # don't embed individually; merge below
             seen.add(base)
             items.append({"name": base, "b64": base64.b64encode(raw).decode("ascii")})
+
+    # merge all segment FASTAs into one whole-genome-per-sample file
+    if seg_fastas:
+        merged = merge_segment_fastas(seg_fastas)
+        items.append({"name": "consensus_whole_genome.fasta",
+                      "b64": base64.b64encode(merged).decode("ascii")})
+
     items.sort(key=lambda it: it["name"])
     return items
 
