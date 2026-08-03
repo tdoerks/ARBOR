@@ -62,6 +62,36 @@ def wanted(name):
     )
 
 
+def trim_consensus_ns(raw_bytes):
+    """Strip flanking N-runs from every record in a FASTA byte string.
+
+    iVar writes per-segment consensus against the full multi-contig reference, so
+    each record is full-genome length (~11,979 bp for RVFV) with the real segment
+    bases in the middle and N-padding on either side (e.g. NC_014395_S has ~10,289
+    leading N's + 1,690 real bases). Trimming the flanks leaves each record at its
+    natural segment length. Internal N's survive because .strip('Nn') only removes
+    N's at the very start and end of the sequence.
+    """
+    out = []
+    header = None
+    seq_lines = []
+    for line in raw_bytes.decode("utf-8", errors="replace").splitlines():
+        if line.startswith(">"):
+            if header is not None:
+                seq = "".join(seq_lines).strip("Nn")
+                out.append(header)
+                out.append(seq)
+            header = line
+            seq_lines = []
+        else:
+            seq_lines.append(line.strip())
+    if header is not None:
+        seq = "".join(seq_lines).strip("Nn")
+        out.append(header)
+        out.append(seq)
+    return "\n".join(out).encode("utf-8")
+
+
 def collect(results_dir):
     """Return [{name, b64}] for every dashboard input under results_dir.
 
@@ -87,6 +117,14 @@ def collect(results_dir):
                     pass                         # not actually gzipped; embed as-is
             if base in seen:
                 continue
+            # Strip flanking N-runs from consensus FASTA records. iVar writes per-segment
+            # consensus against the full multi-contig reference, so each record is full-
+            # genome length (~11,979 bp) with the real segment bases in the middle and
+            # structural N-padding on either side. Trimming the flanking N's leaves each
+            # record at its natural segment length with genuine coverage-gap N's intact
+            # (they are flanked by real bases, so .strip('Nn') leaves them alone).
+            if base.endswith(".consensus.fasta"):
+                raw = trim_consensus_ns(raw)
             seen.add(base)
             items.append({"name": base, "b64": base64.b64encode(raw).decode("ascii")})
     items.sort(key=lambda it: it["name"])
