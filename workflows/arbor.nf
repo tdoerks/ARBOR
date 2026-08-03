@@ -114,6 +114,8 @@ workflow ARBOR {
     ch_multiqc_files = ch_multiqc_files.mix(MOSDEPTH_TRIM.out.summary_txt.map{ _m, f -> f })
     // trimmed mosdepth only (raw + trim share the same filename -> flat-stage collision)
     ch_dashboard_files = ch_dashboard_files.mix(MOSDEPTH_TRIM.out.summary_txt.map{ _m, f -> f })
+    // per-base depth for the per-position coverage plot (Coverage tab)
+    ch_dashboard_files = ch_dashboard_files.mix(MOSDEPTH_TRIM.out.per_base_bed.map{ _m, f -> f })
 
     //
     // VARIANTS (whole multi-segment reference)

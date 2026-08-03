@@ -42,6 +42,10 @@ def wanted(name):
     picks up exactly the dashboard inputs and skips noise -- e.g. per-sample iVar
     *.fa full-genome consensus, the reference, FastQC HTML, BAMs. Works the same on
     a results dir (subdirs) and on Nextflow's flat-staged inputs.
+
+    Includes *.per-base.bed.gz for the per-position coverage depth plot (Coverage
+    tab). These are larger than the summary files (~1-5 MB each compressed) but
+    are decompressed during embedding so the dashboard needs no pako for them.
     """
     n = name.lower()
     return (
@@ -49,7 +53,9 @@ def wanted(name):
         or n.endswith(".vcf") or n.endswith(".vcf.gz") # LoFreq
         or n.endswith(".stats")                         # samtools stats (raw + primertrim)
         or n.endswith(".bowtie2.log")                   # bowtie2 alignment log
-        or n.endswith(".mosdepth.summary.txt")          # mosdepth coverage summary
+        or n.endswith(".mosdepth.summary.txt")          # mosdepth coverage summary (mean per segment)
+        or n.endswith(".per-base.bed.gz")               # mosdepth per-position depth (coverage plot)
+        or n.endswith(".per-base.bed")                  # mosdepth per-position depth (uncompressed)
         or n.endswith(".consensus.fasta")               # per-segment concatenated consensus
         or n.endswith(".treefile")                      # IQ-TREE
         or ("params" in n and n.endswith(".json"))
