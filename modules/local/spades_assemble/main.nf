@@ -4,8 +4,8 @@ process SPADES_ASSEMBLE {
 
     conda "${moduleDir}/environment.yml"
     container "${ workflow.containerEngine in ['singularity', 'apptainer'] && !task.ext.singularity_pull_docker_container ?
-        'https://depot.galaxyproject.org/singularity/spades:4.0.0--h5ca1c30_1' :
-        'quay.io/biocontainers/spades:4.0.0--h5ca1c30_1' }"
+        'https://depot.galaxyproject.org/singularity/spades:4.0.0--haf24da9_4' :
+        'quay.io/biocontainers/spades:4.0.0--haf24da9_4' }"
 
     input:
     tuple val(meta), path(reads)
