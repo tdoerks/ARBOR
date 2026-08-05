@@ -26,6 +26,7 @@ include { MAFFT_ALIGN                         } from '../modules/nf-core/mafft/a
 include { IQTREE                              } from '../modules/nf-core/iqtree/main'
 include { MULTIQC                             } from '../modules/nf-core/multiqc/main'
 include { ARBOR_DASHBOARD                     } from '../modules/local/arbor_dashboard/main'
+include { SPADES_ASSEMBLE                     } from '../modules/local/spades_assemble/main'
 include { paramsSummaryMap       } from 'plugin/nf-schema'
 include { paramsSummaryMultiqc   } from '../subworkflows/nf-core/utils_nfcore_pipeline'
 include { softwareVersionsToYAML } from '../subworkflows/nf-core/utils_nfcore_pipeline'
@@ -81,6 +82,15 @@ workflow ARBOR {
     // fastp takes [meta, reads, adapter_fasta] (adapter [] = auto-detect Illumina adapters)
     FASTP(ch_samplesheet.map { meta, reads -> [ meta, reads, ch_adapter ] }, false, false, false)
     ch_multiqc_files = ch_multiqc_files.mix(FASTP.out.json.map{ _m, f -> f })
+
+    //
+    // DE NOVO ASSEMBLY (parallel branch — does NOT feed mapping/variants/consensus)
+    //
+    if (!params.skip_assembly) {
+        SPADES_ASSEMBLE(FASTP.out.reads)
+        ch_dashboard_files = ch_dashboard_files.mix(SPADES_ASSEMBLE.out.scaffolds.map{ _m, f -> f })
+        ch_dashboard_files = ch_dashboard_files.mix(SPADES_ASSEMBLE.out.stats.map{ _m, f -> f })
+    }
 
     //
     // MAP (local) -> sorted BAM -> index for .bai

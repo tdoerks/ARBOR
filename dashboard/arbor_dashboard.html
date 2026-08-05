@@ -104,6 +104,7 @@
     <button data-tab="groups">SNP Groups</button>
     <button data-tab="consensus">Consensus</button>
     <button data-tab="phylo">Phylogeny</button>
+    <button data-tab="assembly">Assembly</button>
     <button data-tab="params">Parameters</button>
   </nav>
 
@@ -114,6 +115,7 @@
   <section id="groups" class="tab"></section>
   <section id="consensus" class="tab"></section>
   <section id="phylo" class="tab"></section>
+  <section id="assembly" class="tab"></section>
   <section id="params" class="tab"></section>
 </main>
 
@@ -128,10 +130,12 @@ const S = {
   params: null,   // parsed pipeline_info/params.json (values actually used by the run)
   mapping: {},    // sample -> { raw:{SN}, trim:{SN}, alnRate:Number }  (samtools stats + bowtie2 log)
   consensus: [],  // [ {header, sample, segment, seq, len, ns} ]  parsed consensus FASTA records
+  assembly: {},   // sample -> { n_contigs, total_length, largest_contig, n50 }
   covHidden: new Set(),  // samples toggled off in the Coverage plot
   grouping: null, // { groups:[{id,name}], assign:{sample:gid} }  for the SNP Groups tab
   samples: new Set(), segments: new Set(),
 };
+const assemblyFastas = {}; // sample -> raw FASTA text (outside S — not serialised, download only)
 const palette = d3.schemeTableau10.concat(d3.schemeSet3);
 
 /* ============================ pipeline parameters (defaults + docs) ============================
@@ -184,6 +188,7 @@ const PARAM_DEFS = [
     { key:'skip_ivar_variants', flag:'--skip_ivar_variants', def:false, desc:'Skip iVar variant calling.' },
     { key:'skip_lofreq',        flag:'--skip_lofreq',        def:false, desc:'Skip the LoFreq variant path.' },
     { key:'skip_phylogeny',     flag:'--skip_phylogeny',     def:false, desc:'Skip per-segment consensus, MSA and tree building.' },
+    { key:'skip_assembly',      flag:'--skip_assembly',      def:false, desc:'Skip de novo SPAdes assembly (parallel branch; does not affect mapping/variants/consensus).' },
   ]},
 ];
 const PARAM_KEYS = new Set(PARAM_DEFS.flatMap(g => g.items.filter(i => i.key).map(i => i.key)));
@@ -209,6 +214,8 @@ async function handleFiles(list){
       else if(low.includes('per-base')&&low.endsWith('.bed')) await readCov(f,false);
       else if(low.endsWith('.stats')||low.endsWith('.stats.gz')) await readStats(f);
       else if(low.endsWith('.log')) await readBowtieLog(f);
+      else if(low.endsWith('.scaffolds.fasta')) await readAssemblyFasta(f);
+      else if(low.endsWith('.assembly_stats.tsv')) await readAssemblyStats(f);
       else if(low.endsWith('.fasta')||low.endsWith('.fa')||low.endsWith('.fna')||low.endsWith('.fasta.gz')) await readConsensus(f);
       else if(low.endsWith('.tsv')) await readIvar(f);
       else if(low.endsWith('.vcf')||low.endsWith('.vcf.gz')) await readVcf(f,low.endsWith('.gz'));
@@ -314,6 +321,28 @@ async function readBowtieLog(f){
   const sample=f.name.replace(/\.bowtie2\.log$/i,'').replace(/\.log$/i,'');
   S.mapping[sample]=S.mapping[sample]||{}; S.mapping[sample].alnRate=parseFloat(m[1]); S.samples.add(sample);
 }
+/* ============================ Assembly parsers ============================ */
+async function readAssemblyStats(f){
+  const txt=await readText(f,false);
+  const lines=txt.trim().split(/\r?\n/); if(lines.length<2) return;
+  const h=lines[0].split('\t');
+  const iSamp=h.indexOf('sample'),iN=h.indexOf('n_contigs'),
+        iTotal=h.indexOf('total_length'),iLarge=h.indexOf('largest_contig'),iN50=h.indexOf('N50');
+  if(iSamp<0||iN<0) return;
+  for(let i=1;i<lines.length;i++){
+    const c=lines[i].split('\t'); if(c.length<5) continue;
+    const samp=c[iSamp].trim();
+    S.assembly[samp]={n_contigs:+c[iN],total_length:+c[iTotal],largest_contig:+c[iLarge],n50:+c[iN50]};
+    S.samples.add(samp);
+  }
+}
+async function readAssemblyFasta(f){
+  const txt=await readText(f,false);
+  if(!txt.trimStart().startsWith('>')) return;
+  const samp=f.name.replace(/\.scaffolds\.fasta$/i,'');
+  assemblyFastas[samp]=txt; S.samples.add(samp);
+}
+
 // Consensus FASTA (one or many records). Infer segment from a known segment id in
 // the header/filename, and sample from the remaining header text.
 function inferConsId(header, fname){
@@ -352,6 +381,7 @@ function renderChips(){
   add('mapping stats',Object.keys(S.mapping).length);
   add('coverage sets',Object.keys(S.cov).length);
   add('consensus seqs',S.consensus.length);
+  add('assemblies',Object.keys(S.assembly).length);
   add('trees',Object.keys(S.trees).length);
   add('metadata rows',Object.keys(S.meta).length);
   add('params loaded',S.params?1:0);
@@ -363,7 +393,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
   b.classList.add('active'); document.getElementById(b.dataset.tab).classList.add('active');
 });
-function renderAll(){ renderSummary(); renderMapping(); renderVariants(); renderCoverage(); renderGroups(); renderConsensus(); renderPhylo(); renderParams(); }
+function renderAll(){ renderSummary(); renderMapping(); renderVariants(); renderCoverage(); renderGroups(); renderConsensus(); renderPhylo(); renderAssembly(); renderParams(); }
 const segList=()=>[...S.segments].filter(s=>!Object.keys(S.trees).includes(s)||true).sort();
 const sampList=()=>[...S.samples].sort();
 
@@ -377,15 +407,18 @@ function renderSummary(){
     <div class="box"><div class="n">${segs.length}</div><div class="l">Segments</div></div>
     <div class="box"><div class="n">${Object.values(S.variants).reduce((a,v)=>a+v.filter(x=>x.pass).length,0)}</div><div class="l">PASS variants</div></div>
     <div class="box"><div class="n">${Object.keys(S.trees).length}</div><div class="l">Trees</div></div></div>`;
+  const hasAssembly=Object.keys(S.assembly).length>0;
   let rows=sampList().map(s=>{
     const v=(S.variants[s]||[]); const pass=v.filter(x=>x.pass).length;
     const cov=S.cov[s]?S.cov[s].summary:{};
     const covCells=segs.map(seg=>{const m=cov[seg]?cov[seg].mean:null;
       return `<td>${m==null?'<span class="empty" style="padding:0">—</span>':m.toFixed(0)+'×'}</td>`;}).join('');
+    const asmCells=hasAssembly?`<td>${S.assembly[s]?S.assembly[s].n_contigs:'—'}</td><td>${S.assembly[s]?S.assembly[s].largest_contig.toLocaleString()+' bp':'—'}</td>`:'';
     const m=S.meta[s]||{}; const metaCells=S.metaCols.map(c=>`<td>${m[c]||''}</td>`).join('');
-    return `<tr><td><b>${s}</b></td><td>${pass}</td>${covCells}${metaCells}</tr>`;
+    return `<tr><td><b>${s}</b></td><td>${pass}</td>${covCells}${asmCells}${metaCells}</tr>`;
   }).join('');
-  const head=`<tr><th>Sample</th><th>PASS variants</th>${segs.map(s=>`<th>${s} cov</th>`).join('')}${S.metaCols.map(c=>`<th>${c}</th>`).join('')}</tr>`;
+  const asmHead=hasAssembly?'<th>Contigs</th><th>Largest</th>':'';
+  const head=`<tr><th>Sample</th><th>PASS variants</th>${segs.map(s=>`<th>${s} cov</th>`).join('')}${asmHead}${S.metaCols.map(c=>`<th>${c}</th>`).join('')}</tr>`;
   el.innerHTML=`<div class="card"><h3>Run overview</h3>${kpi}</div>
     <div class="card"><h3>Per-sample summary</h3><div class="scroll"><table><thead>${head}</thead><tbody>${rows}</tbody></table></div></div>`;
 }
@@ -589,6 +622,52 @@ function pFmt(v,key){
   if(typeof v==='boolean') return v?'true':'false';
   return String(v);
 }
+/* ============================ Assembly ============================ */
+// RVFV expected segment sizes (bp); ±10% match window
+const RVFV_SEGS=[{name:'L',bp:6404},{name:'M',bp:3885},{name:'S',bp:1690}];
+function segMatchBadge(len){
+  for(const sg of RVFV_SEGS){
+    if(Math.abs(len-sg.bp)/sg.bp<=0.10)
+      return `<span class="badge" style="background:var(--accent);color:#0f1419;padding:2px 6px;border-radius:4px;font-size:11px">${sg.name}</span>`;
+  }
+  return '<span style="color:var(--muted)">—</span>';
+}
+function pEsc(s){ return s.replace(/'/g,"\\'"); }
+function renderAssembly(){
+  const el=document.getElementById('assembly');
+  const samps=Object.keys(S.assembly).sort();
+  if(!samps.length){
+    el.innerHTML='<div class="empty">Upload SPAdes <code>*.assembly_stats.tsv</code> and <code>*.scaffolds.fasta</code> files to view assembly results.</div>';
+    return;
+  }
+  const rows=samps.map(s=>{
+    const a=S.assembly[s];
+    const hasFa=!!assemblyFastas[s];
+    const dlBtn=hasFa
+      ?`<button class="mini" onclick="downloadText('${pEsc(s)}.scaffolds.fasta',assemblyFastas['${pEsc(s)}'])">⬇ FASTA</button>`
+      :'<span style="color:var(--muted)">—</span>';
+    return `<tr>
+      <td><b>${s}</b></td>
+      <td class="val">${a.n_contigs.toLocaleString()}</td>
+      <td class="val">${a.total_length.toLocaleString()}</td>
+      <td class="val">${a.largest_contig.toLocaleString()}</td>
+      <td class="val">${a.n50.toLocaleString()}</td>
+      <td>${segMatchBadge(a.largest_contig)}</td>
+      <td>${dlBtn}</td></tr>`;
+  }).join('');
+  el.innerHTML=`<div class="card"><h3>De novo assembly (SPAdes) <span style="color:var(--muted);font-weight:400">(${samps.length} samples)</span></h3>
+    <div class="controls" style="font-size:12px;color:var(--muted)">
+      Expected RVFV segment sizes: L ≈ 6,404 bp &nbsp;·&nbsp; M ≈ 3,885 bp &nbsp;·&nbsp; S ≈ 1,690 bp &nbsp;(±10% match window)
+    </div>
+    <div class="scroll"><table>
+      <thead><tr>
+        <th>Sample</th><th>N contigs</th><th>Total length</th><th>Largest contig</th><th>N50</th>
+        <th>Segment match</th><th>Download</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div></div>`;
+}
+
 function renderParams(){
   const el=document.getElementById('params');
   const loaded=!!S.params;

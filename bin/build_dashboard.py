@@ -57,6 +57,8 @@ def wanted(name):
         or n.endswith(".per-base.bed.gz")               # mosdepth per-position depth (coverage plot)
         or n.endswith(".per-base.bed")                  # mosdepth per-position depth (uncompressed)
         or n.endswith(".consensus.fasta")               # per-segment concatenated consensus
+        or n.endswith(".scaffolds.fasta")               # SPAdes de novo assembly scaffolds
+        or n.endswith(".assembly_stats.tsv")            # SPAdes assembly stats (n_contigs, N50, etc.)
         or n.endswith(".treefile")                      # IQ-TREE
         or ("params" in n and n.endswith(".json"))
     )
