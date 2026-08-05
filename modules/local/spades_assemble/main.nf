@@ -40,34 +40,41 @@ process SPADES_ASSEMBLE {
         touch ${prefix}.scaffolds.fasta
     fi
 
-    awk -v sample="${meta.id}" '
-    BEGIN { n=0; total=0; largest=0 }
-    /^>/ {
-        if (seq != "") {
-            len = length(seq); n++; total += len
-            if (len > largest) largest = len
-            lens[n] = len
-        }
-        seq = ""; next
-    }
-    { seq = seq \$0 }
-    END {
-        if (seq != "") {
-            len = length(seq); n++; total += len
-            if (len > largest) largest = len; lens[n] = len
-        }
-        n50 = 0
-        if (n > 0) {
-            asort(lens)
-            cumsum = 0
-            for (i = n; i >= 1; i--) {
-                cumsum += lens[i]
-                if (cumsum >= total / 2) { n50 = lens[i]; break }
-            }
-        }
-        print "sample\\tn_contigs\\ttotal_length\\tlargest_contig\\tN50"
-        print sample "\\t" n "\\t" total "\\t" largest "\\t" n50
-    }' ${prefix}.scaffolds.fasta > ${prefix}.assembly_stats.tsv
+    python3 - "${meta.id}" ${prefix}.scaffolds.fasta ${prefix}.assembly_stats.tsv << 'PYEOF'
+import sys
+
+sample, fasta, out = sys.argv[1], sys.argv[2], sys.argv[3]
+lens = []
+seq = []
+with open(fasta) as fh:
+    for line in fh:
+        line = line.rstrip()
+        if line.startswith('>'):
+            if seq:
+                lens.append(len(''.join(seq)))
+            seq = []
+        else:
+            seq.append(line)
+    if seq:
+        lens.append(len(''.join(seq)))
+
+n = len(lens)
+total = sum(lens)
+largest = max(lens) if lens else 0
+n50 = 0
+if lens:
+    lens_sorted = sorted(lens, reverse=True)
+    cumsum = 0
+    for l in lens_sorted:
+        cumsum += l
+        if cumsum >= total / 2:
+            n50 = l
+            break
+
+with open(out, 'w') as fh:
+    fh.write('sample\tn_contigs\ttotal_length\tlargest_contig\tN50\n')
+    fh.write(f'{sample}\t{n}\t{total}\t{largest}\t{n50}\n')
+PYEOF
     """
 
     stub:
