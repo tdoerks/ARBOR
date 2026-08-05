@@ -2,10 +2,9 @@ process ARBOR_DASHBOARD {
     tag "arbor"
     label 'process_single'
 
-    conda "conda-forge::python=3.9.5"
-    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
-        'https://depot.galaxyproject.org/singularity/python:3.9--1' :
-        'quay.io/biocontainers/python:3.9--1' }"
+    // build_dashboard.py uses only the Python standard library (base64, gzip, json, os, sys)
+    // so no container or conda env is needed — system Python 3 suffices on all HPC environments.
+    // Running outside a container also avoids Singularity image pull failures on air-gapped nodes.
 
     input:
     path(result_files, stageAs: 'inputs/*')   // collected run outputs (flat)
