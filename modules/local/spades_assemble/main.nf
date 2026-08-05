@@ -42,7 +42,7 @@ process SPADES_ASSEMBLE {
 
     python3 - "${meta.id}" ${prefix}.scaffolds.fasta ${prefix}.assembly_stats.tsv << 'PYEOF'
 import sys
-
+T = chr(9); NL = chr(10)
 sample, fasta, out = sys.argv[1], sys.argv[2], sys.argv[3]
 lens = []
 seq = []
@@ -57,7 +57,6 @@ with open(fasta) as fh:
             seq.append(line)
     if seq:
         lens.append(len(''.join(seq)))
-
 n = len(lens)
 total = sum(lens)
 largest = max(lens) if lens else 0
@@ -68,12 +67,10 @@ if lens:
     for l in lens_sorted:
         cumsum += l
         if cumsum >= total / 2:
-            n50 = l
-            break
-
+            n50 = l; break
 with open(out, 'w') as fh:
-    fh.write('sample\tn_contigs\ttotal_length\tlargest_contig\tN50\n')
-    fh.write(f'{sample}\t{n}\t{total}\t{largest}\t{n50}\n')
+    fh.write(T.join(['sample','n_contigs','total_length','largest_contig','N50']) + NL)
+    fh.write(T.join([sample, str(n), str(total), str(largest), str(n50)]) + NL)
 PYEOF
     """
 
