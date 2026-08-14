@@ -353,6 +353,9 @@
         },
         "skip_assembly": {
             "type": "boolean"
+        },
+        "skip_abacas": {
+            "type": "boolean"
         }
     }
 }

@@ -25,6 +25,7 @@ include { FIND_CONCATENATE                    } from '../modules/nf-core/find/co
 include { MAFFT_ALIGN                         } from '../modules/nf-core/mafft/align/main'
 include { IQTREE                              } from '../modules/nf-core/iqtree/main'
 include { MULTIQC                             } from '../modules/nf-core/multiqc/main'
+include { ABACAS                              } from '../modules/nf-core/abacas/main'
 include { ARBOR_DASHBOARD                     } from '../modules/local/arbor_dashboard/main'
 include { SPADES_ASSEMBLE                     } from '../modules/local/spades_assemble/main'
 include { paramsSummaryMap       } from 'plugin/nf-schema'
@@ -90,6 +91,14 @@ workflow ARBOR {
         SPADES_ASSEMBLE(FASTP.out.reads)
         ch_dashboard_files = ch_dashboard_files.mix(SPADES_ASSEMBLE.out.scaffolds.map{ _m, f -> f })
         ch_dashboard_files = ch_dashboard_files.mix(SPADES_ASSEMBLE.out.stats.map{ _m, f -> f })
+
+        // ABACAS: order and orient de novo contigs against the reference
+        if (!params.skip_abacas) {
+            def ch_abacas_input = SPADES_ASSEMBLE.out.scaffolds
+                .filter { _meta, scaffolds -> scaffolds.size() > 0 }
+            ABACAS(ch_abacas_input, ch_ref)
+            ch_dashboard_files = ch_dashboard_files.mix(ABACAS.out.results.map{ _m, f -> f }.flatten())
+        }
     }
 
     //
