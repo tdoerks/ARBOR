@@ -65,6 +65,9 @@
   .chip.off{opacity:.35}
   .mini{background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:2px 9px;font-size:12px;cursor:pointer}
   .mini:hover{border-color:var(--accent)}
+  .subtabs{display:flex;gap:6px;margin-bottom:16px}
+  .subtab{background:var(--panel2);border:1px solid var(--line);color:var(--muted);padding:6px 20px;border-radius:20px;cursor:pointer;font-size:13px;font-weight:500}
+  .subtab:hover{color:var(--ink)}.subtab.active{background:var(--accent);color:#000;border-color:var(--accent)}
   .btn{background:var(--accent);color:#fff;border:none;border-radius:7px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
   .btn:hover{filter:brightness(1.08)} .btn:disabled{opacity:.4;cursor:default;filter:none}
   .gwrap{display:flex;gap:12px;flex-wrap:wrap;margin:10px 0}
@@ -692,11 +695,23 @@ function segMatchBadge(len){
 function pEsc(s){ return s.replace(/'/g,"\\'"); }
 function renderAssembly(){
   const el=document.getElementById('assembly');
+  el.innerHTML=`<div class="subtabs">
+    <button class="subtab active" data-sub="spades" onclick="switchAssemblySub('spades')">SPAdes</button>
+    <button class="subtab" data-sub="abacas" onclick="switchAssemblySub('abacas')">ABACAS</button>
+  </div>
+  <div id="asm-spades">${buildSpadesPanel()}</div>
+  <div id="asm-abacas" style="display:none">${renderAbacasCard()}</div>`;
+}
+
+function switchAssemblySub(which){
+  document.querySelectorAll('#assembly .subtab').forEach(b=>b.classList.toggle('active',b.dataset.sub===which));
+  document.getElementById('asm-spades').style.display=which==='spades'?'':'none';
+  document.getElementById('asm-abacas').style.display=which==='abacas'?'':'none';
+}
+
+function buildSpadesPanel(){
   const samps=Object.keys(S.assembly).sort();
-  if(!samps.length){
-    el.innerHTML='<div class="empty">Upload SPAdes <code>*.assembly_stats.tsv</code> and <code>*.scaffolds.fasta</code> files to view assembly results.</div>';
-    return;
-  }
+  if(!samps.length) return '<div class="empty">Upload SPAdes <code>*.assembly_stats.tsv</code> and <code>*.scaffolds.fasta</code> files to view assembly results.</div>';
   const rows=samps.map(s=>{
     const a=S.assembly[s];
     const hasFa=!!assemblyFastas[s];
@@ -712,7 +727,7 @@ function renderAssembly(){
       <td>${segMatchBadge(a.largest_contig)}</td>
       <td>${dlBtn}</td></tr>`;
   }).join('');
-  el.innerHTML=`<div class="card"><h3>De novo assembly (SPAdes) <span style="color:var(--muted);font-weight:400">(${samps.length} samples)</span></h3>
+  return `<div class="card"><h3>De novo assembly (SPAdes) <span style="color:var(--muted);font-weight:400">(${samps.length} samples)</span></h3>
     <div class="controls" style="font-size:12px;color:var(--muted)">
       Expected RVFV segment sizes: L ≈ 6,404 bp &nbsp;·&nbsp; M ≈ 3,885 bp &nbsp;·&nbsp; S ≈ 1,690 bp &nbsp;(±10% match window)
     </div>
@@ -722,7 +737,7 @@ function renderAssembly(){
         <th>Segment match</th><th>Download</th>
       </tr></thead>
       <tbody>${rows}</tbody>
-    </table></div></div>${renderAbacasCard()}`;
+    </table></div></div>`;
 }
 
 function renderAbacasCard(){
