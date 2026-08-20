@@ -22,21 +22,7 @@ process ABACAS {
     prefix   = task.ext.prefix ?: "${meta.id}.abacas"
     """
     # ABACAS requires a single-record reference — split multi-segment FASTA into one file per record
-    python3 - << 'PYEOF'
-segs = {}
-current = None
-with open("${fasta}") as f:
-    for line in f:
-        line = line.rstrip()
-        if line.startswith(">"):
-            current = line[1:].split()[0]
-            segs[current] = []
-        elif current:
-            segs[current].append(line)
-for seg_id, lines in segs.items():
-    with open(f"{seg_id}.split.fa", "w") as out:
-        out.write(f">{seg_id}\\n" + "\\n".join(lines) + "\\n")
-PYEOF
+    awk '/^>/{if(out) close(out); seg=substr(\$1,2); out=seg".split.fa"} out{print > out}' "${fasta}"
 
     # Run ABACAS once per segment
     for ref_seg in *.split.fa; do
