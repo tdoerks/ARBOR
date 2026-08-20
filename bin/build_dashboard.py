@@ -26,6 +26,7 @@ import base64
 import gzip
 import json
 import os
+import re
 import sys
 
 DEFAULT_RESULTS = "/fastscratch/tylerdoe/ARBOR/tests/beocat/results_remap_A03ref"
@@ -59,6 +60,8 @@ def wanted(name):
         or n.endswith(".consensus.fasta")               # per-segment concatenated consensus
         or n.endswith(".scaffolds.fasta")               # SPAdes de novo assembly scaffolds
         or n.endswith(".assembly_stats.tsv")            # SPAdes assembly stats (n_contigs, N50, etc.)
+        or (re.search(r'\.abacas\.[^.]+\.fasta$', n) is not None)   # ABACAS ordered pseudomolecule
+        or (re.search(r'\.abacas\.[^.]+\.crunch$', n) is not None)  # ABACAS contig placement
         or n.endswith(".treefile")                      # IQ-TREE
         or ("params" in n and n.endswith(".json"))
     )

@@ -131,11 +131,13 @@ const S = {
   mapping: {},    // sample -> { raw:{SN}, trim:{SN}, alnRate:Number }  (samtools stats + bowtie2 log)
   consensus: [],  // [ {header, sample, segment, seq, len, ns} ]  parsed consensus FASTA records
   assembly: {},   // sample -> { n_contigs, total_length, largest_contig, n50 }
+  abacas: {},     // sample -> { seg -> { placed, covBp, identity, totalLen, nCount } }
   covHidden: new Set(),  // samples toggled off in the Coverage plot
   grouping: null, // { groups:[{id,name}], assign:{sample:gid} }  for the SNP Groups tab
   samples: new Set(), segments: new Set(),
 };
 const assemblyFastas = {}; // sample -> raw FASTA text (outside S — not serialised, download only)
+const abacasFastas = {};   // `${samp}::${seg}` -> ordered pseudomolecule FASTA text
 const palette = d3.schemeTableau10.concat(d3.schemeSet3);
 
 /* ============================ pipeline parameters (defaults + docs) ============================
@@ -216,6 +218,8 @@ async function handleFiles(list){
       else if(low.endsWith('.log')) await readBowtieLog(f);
       else if(low.endsWith('.scaffolds.fasta')) await readAssemblyFasta(f);
       else if(low.endsWith('.assembly_stats.tsv')) await readAssemblyStats(f);
+      else if(low.match(/\.abacas\.[^.]+\.fasta$/)) await readAbacasFasta(f);
+      else if(low.match(/\.abacas\.[^.]+\.crunch$/)) await readAbacasCrunch(f);
       else if(low.endsWith('.fasta')||low.endsWith('.fa')||low.endsWith('.fna')||low.endsWith('.fasta.gz')) await readConsensus(f);
       else if(low.endsWith('.tsv')) await readIvar(f);
       else if(low.endsWith('.vcf')||low.endsWith('.vcf.gz')) await readVcf(f,low.endsWith('.gz'));
@@ -341,6 +345,59 @@ async function readAssemblyFasta(f){
   if(!txt.trimStart().startsWith('>')) return;
   const samp=f.name.replace(/\.scaffolds\.fasta$/i,'');
   assemblyFastas[samp]=txt; S.samples.add(samp);
+}
+
+async function readAbacasFasta(f){
+  const m=f.name.match(/^(.+)\.abacas\.(.+)\.fasta$/i);
+  if(!m) return;
+  const [,samp,seg]=m;
+  const txt=await readText(f,false);
+  let totalLen=0,nCount=0;
+  for(const line of txt.split('\n')){
+    if(line.startsWith('>')) continue;
+    const s=line.trim();
+    totalLen+=s.length;
+    for(const c of s) if(c==='N'||c==='n') nCount++;
+  }
+  abacasFastas[`${samp}::${seg}`]=txt;
+  S.abacas[samp]=S.abacas[samp]||{};
+  S.abacas[samp][seg]=S.abacas[samp][seg]||{};
+  Object.assign(S.abacas[samp][seg],{totalLen,nCount});
+  S.samples.add(samp);
+}
+
+async function readAbacasCrunch(f){
+  const m=f.name.match(/^(.+)\.abacas\.(.+)\.crunch$/i);
+  if(!m) return;
+  const [,samp,seg]=m;
+  const txt=await readText(f,false);
+  const placed=new Set();
+  const intervals=[];
+  const idys=[];
+  for(const line of txt.split('\n')){
+    const t=line.trim();
+    if(!t||t.startsWith('#')||t.startsWith('>')) continue;
+    const p=t.split(/\s+/);
+    if(p.length<8) continue;
+    const s1=+p[0],e1=+p[1],idy=+p[6];
+    if(isNaN(s1)||isNaN(e1)||isNaN(idy)) continue;
+    intervals.push([Math.min(s1,e1),Math.max(s1,e1)]);
+    idys.push(idy);
+    if(p[8]) placed.add(p[8]);
+  }
+  intervals.sort((a,b)=>a[0]-b[0]);
+  let covBp=0,cur=null;
+  for(const [s,e] of intervals){
+    if(!cur){cur=[s,e];}
+    else if(s<=cur[1]){cur[1]=Math.max(cur[1],e);}
+    else{covBp+=cur[1]-cur[0];cur=[s,e];}
+  }
+  if(cur) covBp+=cur[1]-cur[0];
+  const identity=idys.length?(idys.reduce((a,b)=>a+b,0)/idys.length).toFixed(1):null;
+  S.abacas[samp]=S.abacas[samp]||{};
+  S.abacas[samp][seg]=S.abacas[samp][seg]||{};
+  Object.assign(S.abacas[samp][seg],{placed:placed.size,covBp,identity});
+  S.samples.add(samp);
 }
 
 // Consensus FASTA (one or many records). Infer segment from a known segment id in
@@ -665,6 +722,52 @@ function renderAssembly(){
         <th>Segment match</th><th>Download</th>
       </tr></thead>
       <tbody>${rows}</tbody>
+    </table></div></div>${renderAbacasCard()}`;
+}
+
+function renderAbacasCard(){
+  const abSamps=Object.keys(S.abacas).sort();
+  if(!abSamps.length) return '<div class="card"><h3>ABACAS — reference-ordered contigs</h3><div class="empty">No ABACAS output loaded. Run with <code>--skip_abacas false</code> and reload results.</div></div>';
+  const SEG_ORDER=['NC_014397_L','NC_014396_M','NC_014395_S'];
+  const SEG_LABEL={'NC_014397_L':'L (6,404 bp)','NC_014396_M':'M (3,885 bp)','NC_014395_S':'S (1,690 bp)'};
+  const rows=[];
+  for(const samp of abSamps){
+    const segs=S.abacas[samp];
+    const segKeys=SEG_ORDER.filter(k=>segs[k]).concat(Object.keys(segs).filter(k=>!SEG_ORDER.includes(k)).sort());
+    for(const seg of segKeys){
+      const d=segs[seg];
+      const label=SEG_LABEL[seg]||seg;
+      const placed=d.placed!=null?d.placed.toLocaleString():'—';
+      const covBp=d.covBp!=null?d.covBp.toLocaleString()+' bp':'—';
+      const idy=d.identity!=null?d.identity+'%':'—';
+      const ordLen=d.totalLen!=null?d.totalLen.toLocaleString()+' bp':'—';
+      const gapBp=d.nCount!=null?d.nCount.toLocaleString()+' bp':'—';
+      const covPct=(d.totalLen&&d.nCount!=null)?((d.totalLen-d.nCount)/d.totalLen*100).toFixed(1)+'%':'—';
+      const key=`${pEsc(samp)}::${pEsc(seg)}`;
+      const dlBtn=abacasFastas[`${samp}::${seg}`]
+        ?`<button class="mini" onclick="downloadText('${pEsc(samp)}.abacas.${pEsc(seg)}.fasta',abacasFastas['${key}'])">⬇ FASTA</button>`
+        :'<span style="color:var(--muted)">—</span>';
+      rows.push(`<tr>
+        <td><b>${pEsc(samp)}</b></td>
+        <td class="val" style="color:var(--muted)">${pEsc(label)}</td>
+        <td class="val">${placed}</td>
+        <td class="val">${covBp}</td>
+        <td class="val">${idy}</td>
+        <td class="val">${ordLen}</td>
+        <td class="val">${gapBp} <span style="color:var(--muted);font-size:11px">(${covPct} non-N)</span></td>
+        <td>${dlBtn}</td></tr>`);
+    }
+  }
+  return `<div class="card" style="margin-top:18px"><h3>ABACAS — reference-ordered contigs <span style="color:var(--muted);font-weight:400">(${abSamps.length} samples)</span></h3>
+    <div class="controls" style="font-size:12px;color:var(--muted)">
+      Contigs from SPAdes ordered and oriented against each reference segment via nucmer. Gap bases filled with Ns in the ordered pseudomolecule.
+    </div>
+    <div class="scroll"><table>
+      <thead><tr>
+        <th>Sample</th><th>Segment</th><th>Contigs placed</th><th>Ref covered</th><th>Mean identity</th>
+        <th>Ordered length</th><th>Gap bases (non-N %)</th><th>Download</th>
+      </tr></thead>
+      <tbody>${rows.join('')}</tbody>
     </table></div></div>`;
 }
 
