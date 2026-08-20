@@ -378,12 +378,12 @@ async function readAbacasCrunch(f){
     const t=line.trim();
     if(!t||t.startsWith('#')||t.startsWith('>')) continue;
     const p=t.split(/\s+/);
-    if(p.length<8) continue;
-    const s1=+p[0],e1=+p[1],idy=+p[6];
-    if(isNaN(s1)||isNaN(e1)||isNaN(idy)) continue;
+    if(p.length<5) continue;
+    const idy=+p[0],s1=+p[2],e1=+p[3];
+    if(isNaN(idy)||isNaN(s1)||isNaN(e1)) continue;
     intervals.push([Math.min(s1,e1),Math.max(s1,e1)]);
     idys.push(idy);
-    if(p[8]) placed.add(p[8]);
+    if(p[4]) placed.add(p[4]);
   }
   intervals.sort((a,b)=>a[0]-b[0]);
   let covBp=0,cur=null;
