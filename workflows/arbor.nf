@@ -28,6 +28,7 @@ include { MULTIQC                             } from '../modules/nf-core/multiqc
 include { ABACAS                              } from '../modules/nf-core/abacas/main'
 include { ARBOR_DASHBOARD                     } from '../modules/local/arbor_dashboard/main'
 include { SPADES_ASSEMBLE                     } from '../modules/local/spades_assemble/main'
+include { CAT_FASTQ                           } from '../modules/local/cat_fastq/main'
 include { paramsSummaryMap       } from 'plugin/nf-schema'
 include { paramsSummaryMultiqc   } from '../subworkflows/nf-core/utils_nfcore_pipeline'
 include { softwareVersionsToYAML } from '../subworkflows/nf-core/utils_nfcore_pipeline'
@@ -74,14 +75,40 @@ workflow ARBOR {
     def ch_fai_bare  = SAMTOOLS_FAIDX.out.fai.map { _m, fai -> fai }.first()
 
     //
+    // IN SILICO POOLING — concatenate FASTQs by day group (D3/D7/D14)
+    // Sample IDs follow R[rep]D[day][num] e.g. R1D717, R3D1401
+    //
+    def ch_reads = ch_samplesheet
+    if (!params.skip_pooling) {
+        def ch_pooled = ch_samplesheet
+            .map { meta, reads ->
+                def m = (meta.id =~ /D(14|7|3)\d+/)
+                def day = m ? m[0][1] : null
+                [ day, reads ]
+            }
+            .filter { day, reads -> day != null }
+            .groupTuple()
+            .map { day, reads_list ->
+                def meta_pool = [id: "D${day}_pooled", single_end: false]
+                def r1s = reads_list.collect { it[0] }
+                def r2s = reads_list.collect { it[1] }
+                [ meta_pool, r1s, r2s ]
+            }
+        CAT_FASTQ(ch_pooled)
+        ch_reads = ch_samplesheet.mix(
+            CAT_FASTQ.out.reads.map { meta, r1, r2 -> [ meta, [r1, r2] ] }
+        )
+    }
+
+    //
     // READS QC + TRIM
     //
     if (!params.skip_fastqc) {
-        FASTQC(ch_samplesheet)
+        FASTQC(ch_reads)
         ch_multiqc_files = ch_multiqc_files.mix(FASTQC.out.zip.map{ _m, f -> f })
     }
     // fastp takes [meta, reads, adapter_fasta] (adapter [] = auto-detect Illumina adapters)
-    FASTP(ch_samplesheet.map { meta, reads -> [ meta, reads, ch_adapter ] }, false, false, false)
+    FASTP(ch_reads.map { meta, reads -> [ meta, reads, ch_adapter ] }, false, false, false)
     ch_multiqc_files = ch_multiqc_files.mix(FASTP.out.json.map{ _m, f -> f })
 
     //
