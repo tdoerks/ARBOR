@@ -115,7 +115,8 @@ workflow ARBOR {
     // DE NOVO ASSEMBLY (parallel branch — does NOT feed mapping/variants/consensus)
     //
     if (!params.skip_assembly) {
-        SPADES_ASSEMBLE(FASTP.out.reads)
+        def ch_assembly_reads = FASTP.out.reads.filter { meta, _reads -> !meta.id.endsWith('_pooled') }
+        SPADES_ASSEMBLE(ch_assembly_reads)
         ch_dashboard_files = ch_dashboard_files.mix(SPADES_ASSEMBLE.out.scaffolds.map{ _m, f -> f })
         ch_dashboard_files = ch_dashboard_files.mix(SPADES_ASSEMBLE.out.stats.map{ _m, f -> f })
 
