@@ -13,7 +13,7 @@ process SPADES_ASSEMBLE {
     output:
     tuple val(meta), path("${prefix}.scaffolds.fasta"), optional: true, emit: scaffolds
     tuple val(meta), path("${prefix}.assembly_stats.tsv"),              emit: stats
-    tuple val("${task.process}"), val('spades'), eval("spades.py --version 2>&1 | sed 's/SPAdes v//'"), topic: versions
+    tuple val("${task.process}"), val('spades'), eval("spades.py --version 2>&1 | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+'"), topic: versions
 
     when:
     task.ext.when == null || task.ext.when
