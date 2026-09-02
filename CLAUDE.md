@@ -1,6 +1,6 @@
 # Claude Code — Session Notes
 
-Last active: (updated end of session 2026-08-28)
+Last active: (updated end of session 2026-09-02)
 
 ## Environment
 - WSL Ubuntu-24.04 on Windows (KSU — tylerdoe)
@@ -45,15 +45,47 @@ gh auth setup-git   # wires gh credentials to git
 
 ### NARMS bulk storage cleanup — `/bulk/tylerdoe/NARMS/`
 - **Goal**: Flatten FASTQs by year into `samples_clean/` folders, remove nested BaseSpace hash dirs
-- **Structure**: `/bulk/tylerdoe/NARMS/2025/samples_clean/`, `/bulk/tylerdoe/NARMS/2026/`
-- **In progress**: Moving 2025-collected samples (25KS prefix) from `2026/1-6-26_NARMS_WGS/` → `2025/samples_clean/`
-  - FASTQs extracted from hash subdirs to `1-6-26_NARMS_WGS/` folder already
-  - Move command: `mv /bulk/tylerdoe/NARMS/2026/1-6-26_NARMS_WGS/*.fastq.gz /bulk/tylerdoe/NARMS/2025/samples_clean/`
-- **Duplicate issue found**: 26 samples appear in both top-level run folders AND `Runs/` subfolder
-  - `Runs/` has 16 UNIQUE samples (March 3 requeue: `26KS0*_3_3_2026_*`) not elsewhere
-  - Duplicates: top-level `2-23-26_NARMS_BWGS_2026-02-23/` and `3-5-26_NARMS_USDA_BWGS_EM_2026-03-05/` overlap with `Runs/`
-  - Strategy: keep top-level organized versions; move unique Runs/ samples out before deleting Runs/
-- **Next**: Confirm 1-6-26 FASTQs moved to samples_clean; continue with remaining 2026 run folders
+- **Structure**: `/bulk/tylerdoe/NARMS/2025/samples_clean/`, `/bulk/tylerdoe/NARMS/2026/` (flat)
+- **Pass sample list**: 112 confirmed-pass 26KS samples (26KS01–26KS07) to move to `/bulk/tylerdoe/NARMS/2026/`
+  - Script at `/workspace/copy_pass_samples.py` — finds each sample anywhere under NARMS and copies R1+R2 to flat 2026 folder
+  - Get to Beocat: `wsl bash -c "cat ~/claude-workspace/copy_pass_samples.py | ssh tylerdoe@beocat.ksu.edu 'cat > /fastscratch/tylerdoe/copy_pass_samples.py'"`
+  - Run on Beocat: `python3 /fastscratch/tylerdoe/copy_pass_samples.py`
+- **BaseSpace permission issue**: dirs downloaded with `dr-x` — always `chmod -R u+w <folder>` before mv/rm
+- **Progress so far**: 26KS01 + 26KS02 samples confirmed present in 2026 flat folder; 26KS03–07 still in unprocessed subfolders
+- **Key finding**: Sxx slot numbers differ between pass list and disk filenames — that's normal, doesn't affect identity
+- **One lib ID discrepancy**: pass list has 26KS02CL01-EC as `26DL039` but disk has `26DL038` — likely typo in pass list
+- **Remaining run folders to process**: `2-23-26_NARMS_BWGS_2026-02-23`, `3_3_2026_NARMS_WGS_requeue_NEB`, `3-5-26_NARMS_USDA_BWGS_EM_2026-03-05`, `4-22-26_RVFV_req_NEB`, `ICA_Workflows_2026_04`, `NARMS-425401161`, `narms-435220242`, `Runs/` (has 16 unique March 3 requeue samples — don't delete without extracting those first)
+- **Next**: Run copy_pass_samples.py on Beocat to bulk-copy all pass samples to flat 2026 folder
+
+### Platinum-Calibration (github.com/tdoerks/Platinum-Calibration)
+- **Live site**: https://tdoerks.github.io/Platinum-Calibration/ (serves from `main`)
+- **Newest branch**: `unified-rebuild` (July 13) — adds DYMO label printer tab, 1 commit ahead of main, 5 behind
+- **Google Drive integration**: `google-drive-integration` branch — Phase 1 auth started (May 3) but never merged
+- **Goal**: Add Microsoft backend (instead of Google Drive) + pipette serial number registry with auto-fill
+  - When serial # typed → XLOOKUP auto-fills manufacturer/model/max volume from registry
+  - New pipettes: fill manually → add to registry
+- **Data storage decision**: Local dedicated PC (SQLite) rather than cloud — data stays in building
+- **Next**: Finish Google Drive integration branch OR rewrite for Microsoft Graph API
+
+### Lab Server / Open-Source Lab Tools
+- **Repo**: github.com/tdoerks/open-source-lab-resources
+- **Tools**: bacterial-isolation-tracker, checkin-board, freezer-inventory, pipetting-tutorial, miseq-pooling, etc.
+- **Goal**: Host tools on a dedicated lab PC, accessible to team from anywhere, client data secure
+- **Architecture**:
+  ```
+  Internet → Cloudflare Access (login gate, free up to 50 users)
+                  ↓
+            Cloudflare Tunnel (outbound, works through guest WiFi/NAT)
+                  ↓
+            Dedicated lab PC (nginx serves HTML, SQLite stores data)
+  ```
+- **Tested 2026-09-02**: Cloudflare quick tunnel working on current PC
+  - Temp URL was: `https://shapes-prizes-advertiser-atom.trycloudflare.com` (expired)
+  - Test command (WSL): `python3 -m http.server 8080` + `cloudflared tunnel --url http://localhost:8080`
+- **Guest WiFi OK**: Cloudflare Tunnel is outbound-only, works through client isolation
+- **Data security plan**: Data on local PC (not cloud), Cloudflare Access gates login by email
+- **Auth plan**: Personal Microsoft 365 or Google account (NOT KSU — KSU IT controls those)
+- **Next**: Set up dedicated PC with Ubuntu + nginx + Cloudflare named tunnel + Access login wall
 
 ### E-ink display (ordered 2026-08-24, arrives ~Aug 25-26)
 - **Elecrow CrowPanel 2.13" ESP32-S3 e-ink** — ordered from Amazon ~$25
