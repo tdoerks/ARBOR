@@ -1,6 +1,6 @@
 # Claude Code — Session Notes
 
-Last active: (updated end of session 2026-09-02)
+Last active: (updated end of session 2026-09-03)
 
 ## Environment
 - WSL Ubuntu-24.04 on Windows (KSU — tylerdoe)
@@ -87,12 +87,23 @@ gh auth setup-git   # wires gh credentials to git
 - **Auth plan**: Personal Microsoft 365 or Google account (NOT KSU — KSU IT controls those)
 - **Next**: Set up dedicated PC with Ubuntu + nginx + Cloudflare named tunnel + Access login wall
 
-### E-ink display (ordered 2026-08-24, arrives ~Aug 25-26)
-- **Elecrow CrowPanel 2.13" ESP32-S3 e-ink** — ordered from Amazon ~$25
-- Plan: Arduino sketch polls `https://raw.githubusercontent.com/tdoerks/open-source-lab-resources/main/checkin-board/status.json` every 10 min
-- Displays: current status + note + QR code linking to web checkin-board
-- Plugs in via USB-C (no built-in battery); 3D print case from Hale Library makerspace
-- **Next**: Write Arduino sketch + flash via Arduino IDE
+### E-ink display (Elecrow CrowPanel 2.13" ESP32-S3)
+- **Sketch written**: `/workspace/eink_checkin/checkin_display.ino` — complete and ready to flash
+  - WiFi → polls status.json every 10 min → deep sleep between refreshes
+  - Renders: status lines (left) + QR code (right) + timestamp (bottom)
+  - Libraries needed: GxEPD2, ArduinoJson, qrcode (Richard Moore)
+  - Board setting: ESP32S3 Dev Module
+  - Pins: EPD_CS=5, EPD_DC=17, EPD_RST=16, EPD_BUSY=4 (verify against Elecrow datasheet)
+- **Flashing status: BLOCKED — USB driver issue**
+  - Board plugged in via USB-C → shows as "billboard device" in Windows Device Manager (no COM port assigned)
+  - ESP32-S3 uses native USB — needs ESP32-S3 USB CDC driver, user has no Windows admin rights
+  - WSL only sees /dev/ttyS0-S7, no /dev/ttyUSB* or /dev/ttyACM*
+  - esptool + python3-serial installed in WSL already: `sudo apt install esptool python3-serial -y`
+- **Next steps to try**:
+  1. Hold BOOT button on board, plug in USB, release BOOT after 2s → check Device Manager for new device
+  2. Check if usbipd-win already installed in PowerShell: `usbipd list`
+     - If yes: `usbipd bind --busid <id>` → `usbipd attach --wsl` → flash via WSL
+  3. If neither works: try a different computer with admin rights to install ESP32 drivers + Arduino IDE
 
 ### BaseSpace download (pending)
 - Run: `7-17-26_NARMS-NGS_BWGS_2026-07-17T21_35_42_9845731` (BCLConvert, 2GB)
