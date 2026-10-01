@@ -29,7 +29,8 @@
 ## Usage
 
 > [!TIP]
-> **Running on KSU Beocat?** Follow the step-by-step [**Beocat User Guide**](docs/beocat_user_guide.md) —
+> **Running on KSU Beocat?** Copy-paste commands for your own account: [**Beocat quickstart**](docs/beocat_quickstart.md).
+> Background and options: the [**Beocat User Guide**](docs/beocat_user_guide.md) —
 > upload reads, build the samplesheet, `sbatch`, done. The RVFV reference, primers and segments are
 > bundled defaults. A ready run kit is in [`tests/beocat/`](tests/beocat/).
 

@@ -1,5 +1,7 @@
 # ARBOR — Beocat User Guide
 
+> Just want the commands? See the [command-by-command quickstart](beocat_quickstart.md).
+
 How to run **ARBOR** (viral tiling-amplicon: primer-trimmed mapping → iSNVs → per-segment consensus →
 phylogeny) on KSU [Beocat](https://www.k-state.edu/hpc/), from Illumina paired-end `fastq.gz`.
 
