@@ -8,3 +8,15 @@ testing*
 *.pyc
 null/
 .lineage/
+
+# Per-user run folders and run-kit outputs (see docs/beocat_quickstart.md)
+runs/
+tests/beocat/samplesheet.csv
+tests/beocat/results*/
+tests/beocat/work*/
+tests/beocat/nextflow
+tests/beocat/arbor_head_*.log
+*_dashboard_loaded.html
+
+# Personal notes / assistant context — kept outside the pipeline repo
+CLAUDE.md

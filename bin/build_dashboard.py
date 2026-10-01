@@ -17,9 +17,10 @@ exactly as if you had dropped them.
 Note: the template loads d3 + pako from a CDN, so rendering still needs internet
 (pre-existing). We gunzip *.vcf.gz during embedding so the DATA doesn't need pako.
 
-USAGE (defaults target the Beocat remap run):
-    python3 bin/build_dashboard.py
+USAGE (the pipeline's ARBOR_DASHBOARD step passes all three arguments):
     python3 bin/build_dashboard.py <results_dir> <template.html> <output.html>
+    python3 bin/build_dashboard.py            # ./results, the repo's dashboard template,
+                                              # writes ./arbor_dashboard_loaded.html
 """
 
 import base64
@@ -29,9 +30,9 @@ import os
 import re
 import sys
 
-DEFAULT_RESULTS = "/fastscratch/tylerdoe/ARBOR/tests/beocat/results_remap_A03ref"
-DEFAULT_TEMPLATE = "/fastscratch/tylerdoe/ARBOR/dashboard/arbor_dashboard.html"
-DEFAULT_OUTPUT = "/fastscratch/tylerdoe/ARBOR/tests/beocat/arbor_dashboard_A03_loaded.html"
+DEFAULT_RESULTS = "results"
+DEFAULT_TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "dashboard", "arbor_dashboard.html")
+DEFAULT_OUTPUT = "arbor_dashboard_loaded.html"
 
 MARKER = "__ARBOR_EMBED__"
 
