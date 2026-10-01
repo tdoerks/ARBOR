@@ -81,6 +81,9 @@ workflow ARBOR {
     def ch_reads = ch_samplesheet
     if (!params.skip_pooling) {
         def ch_pooled = ch_samplesheet
+            // --pool_exclude: keep e.g. re-sequenced duplicates (R3D310_9-29) out of the pools so
+            // the same animal isn't counted twice; they are still analysed individually
+            .filter { meta, reads -> !params.pool_exclude || !(meta.id =~ params.pool_exclude) }
             .map { meta, reads ->
                 def m = (meta.id =~ /D(14|7|3)\d+/)
                 def day = m ? m[0][1] : null

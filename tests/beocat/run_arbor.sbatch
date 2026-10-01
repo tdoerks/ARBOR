@@ -54,8 +54,11 @@ REPO_ROOT="$(cd "$SLURM_SUBMIT_DIR/../.." && pwd)"
     --input   samplesheet.csv \
     --outdir  results \
     -work-dir "$NXF_WORK" \
-    -resume
+    -resume \
+    "$@"
 
 # Reference (RVFV MP-12 S/M/L), primer BED, and --segments are bundled defaults.
 # For a different virus, add: --reference ref.fa --primer_bed primers.bed --segments id1,id2,...
 # To compare against external strains in the trees, add: --context_fasta known_strains.fa
+# Extra options can also be passed at submit time, e.g.:
+#   sbatch run_arbor.sbatch --pool_exclude '_9-29$'      (keep re-sequenced duplicates out of the day pools)
