@@ -29,6 +29,7 @@ include { ABACAS                              } from '../modules/nf-core/abacas/
 include { ARBOR_DASHBOARD                     } from '../modules/local/arbor_dashboard/main'
 include { SPADES_ASSEMBLE                     } from '../modules/local/spades_assemble/main'
 include { CAT_FASTQ                           } from '../modules/local/cat_fastq/main'
+include { CAT_FASTQ as CAT_FASTQ_MERGE        } from '../modules/local/cat_fastq/main'
 include { paramsSummaryMap       } from 'plugin/nf-schema'
 include { paramsSummaryMultiqc   } from '../subworkflows/nf-core/utils_nfcore_pipeline'
 include { softwareVersionsToYAML } from '../subworkflows/nf-core/utils_nfcore_pipeline'
@@ -75,12 +76,33 @@ workflow ARBOR {
     def ch_fai_bare  = SAMTOOLS_FAIDX.out.fai.map { _m, fai -> fai }.first()
 
     //
+    // MERGE RE-SEQUENCED SAMPLES — samplesheet rows that share a sample name (e.g. the same
+    // sample sequenced on two runs) are concatenated into one sample before analysis.
+    // Single-row samples pass through untouched (their cached tasks are reused).
+    //
+    def ch_grouped = ch_samplesheet
+        .map { meta, reads -> [ meta.id, meta, reads ] }
+        .groupTuple()
+        .branch { _id, _metas, reads_list ->
+            single: reads_list.size() == 1
+            multi:  true
+        }
+    CAT_FASTQ_MERGE(
+        ch_grouped.multi.map { _id, metas, reads_list ->
+            [ metas[0] + [ merged_rows: reads_list.size() ], reads_list.collect { it[0] }, reads_list.collect { it[1] } ]
+        }
+    )
+    def ch_samples = ch_grouped.single
+        .map { _id, metas, reads_list -> [ metas[0], reads_list[0] ] }
+        .mix( CAT_FASTQ_MERGE.out.reads.map { meta, r1, r2 -> [ meta, [r1, r2] ] } )
+
+    //
     // IN SILICO POOLING — concatenate FASTQs by day group (D3/D7/D14)
     // Sample IDs follow R[rep]D[day][num] e.g. R1D717, R3D1401
     //
-    def ch_reads = ch_samplesheet
-    if (!params.skip_pooling) {
-        def ch_pooled = ch_samplesheet
+    def ch_reads = ch_samples
+    if (params.pooling) {
+        def ch_pooled = ch_samples
             // --pool_exclude: keep e.g. re-sequenced duplicates (R3D310_9-29) out of the pools so
             // the same animal isn't counted twice; they are still analysed individually
             .filter { meta, reads -> !params.pool_exclude || !(meta.id =~ params.pool_exclude) }
@@ -98,7 +120,7 @@ workflow ARBOR {
                 [ meta_pool, r1s, r2s ]
             }
         CAT_FASTQ(ch_pooled)
-        ch_reads = ch_samplesheet.mix(
+        ch_reads = ch_samples.mix(
             CAT_FASTQ.out.reads.map { meta, r1, r2 -> [ meta, [r1, r2] ] }
         )
     }
