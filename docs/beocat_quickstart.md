@@ -109,6 +109,17 @@ Check the output:
 cut -d, -f1 samplesheet.csv | sort | uniq -d
 ```
 
+**Same sample sequenced on more than one run?** Give its rows the **same name** on purpose — ARBOR
+joins their reads into one sample before analysis (more depth). For example:
+
+```
+sample,fastq_1,fastq_2
+R3D310,/fastscratch/.../run1/R3D310_S4_L001_R1_001.fastq.gz,/fastscratch/.../run1/R3D310_S4_L001_R2_001.fastq.gz
+R3D310,/fastscratch/.../run2/R3D310_S4_L001_R1_001.fastq.gz,/fastscratch/.../run2/R3D310_S4_L001_R2_001.fastq.gz
+```
+
+To keep the runs separate instead, give them different names (e.g. `R3D310` and `R3D310_rerun`).
+
 ---
 
 ## 5. Get the run script
@@ -229,7 +240,7 @@ tail -n 20 work/ab/cdef12…/.command.err
 | Option | What it does |
 |---|---|
 | `--reference ref.fa` | Map to a different reference (default: RVFV MP-12) |
-| `--skip_pooling false` | Turn on in silico D3/D7/D14 day pools (off by default) |
+| `--pooling` | Turn on in silico D3/D7/D14 day pools (off by default) |
 | `--pool_exclude '_rerun$'` | With pooling on, leave matching samples out of the pools |
 | `--skip_lofreq` / `--skip_phylogeny` | Skip LoFreq variant calling / the trees |
 | `--context_fasta strains.fa` | Add external strains to the trees |

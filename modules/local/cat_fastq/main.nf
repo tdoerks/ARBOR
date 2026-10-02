@@ -3,7 +3,8 @@ process CAT_FASTQ {
     label 'process_low'
 
     input:
-    tuple val(meta), path(r1_files), path(r2_files)
+    // staged under numbered names: rows from different runs can share identical file names
+    tuple val(meta), path(r1_files, stageAs: 'in_R1_??.fastq.gz'), path(r2_files, stageAs: 'in_R2_??.fastq.gz')
 
     output:
     tuple val(meta), path("${meta.id}_R1.fastq.gz"), path("${meta.id}_R2.fastq.gz"), emit: reads

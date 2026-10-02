@@ -26,6 +26,10 @@ export NXF_WORK="$PWD/work"
 export NXF_SINGULARITY_CACHEDIR="/fastscratch/$USER/singularity_cache"
 export NXF_HOME="$PWD/.nextflow_home"
 export NXF_VER=26.04.3
+# Legacy (v1) config/script parser: under Nextflow 26's strict (v2) parser, CLI flags arrive as
+# strings and nf-schema rejects booleans (e.g. --pooling, --skip_lofreq: "Value is [string] but
+# should be [boolean]"). Remove once ARBOR declares typed params (params { pooling: Boolean ... }).
+export NXF_SYNTAX_PARSER=v1
 mkdir -p "$NXF_SINGULARITY_CACHEDIR" "$NXF_HOME"
 
 # Environment.
