@@ -227,6 +227,8 @@ def main():
     ap.add_argument("--primers", default=os.path.join(ASSETS, "rvfv_amplicons_v4.bed"))
     args = ap.parse_args()
     out = args.out or f"{args.sample}_reference.fa"
+    if os.path.dirname(out):
+        os.makedirs(os.path.dirname(out), exist_ok=True)
     import shutil
     if not shutil.which("mafft"):
         sys.exit("mafft not found on PATH — on Beocat run:  module load MAFFT")
