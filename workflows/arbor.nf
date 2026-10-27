@@ -25,6 +25,11 @@ include { FIND_CONCATENATE                    } from '../modules/nf-core/find/co
 include { MAFFT_ALIGN                         } from '../modules/nf-core/mafft/align/main'
 include { IQTREE                              } from '../modules/nf-core/iqtree/main'
 include { MULTIQC                             } from '../modules/nf-core/multiqc/main'
+include { ABACAS                              } from '../modules/nf-core/abacas/main'
+include { ARBOR_DASHBOARD                     } from '../modules/local/arbor_dashboard/main'
+include { SPADES_ASSEMBLE                     } from '../modules/local/spades_assemble/main'
+include { CAT_FASTQ                           } from '../modules/local/cat_fastq/main'
+include { CAT_FASTQ as CAT_FASTQ_MERGE        } from '../modules/local/cat_fastq/main'
 include { paramsSummaryMap       } from 'plugin/nf-schema'
 include { paramsSummaryMultiqc   } from '../subworkflows/nf-core/utils_nfcore_pipeline'
 include { softwareVersionsToYAML } from '../subworkflows/nf-core/utils_nfcore_pipeline'
@@ -49,6 +54,7 @@ workflow ARBOR {
 
     def ch_versions = channel.empty()
     def ch_multiqc_files = channel.empty()
+    def ch_dashboard_files = channel.empty()   // run outputs fed to the pre-loaded dashboard
 
     //
     // SHARED REFERENCE — one reference for the whole run, as value channels
@@ -70,15 +76,83 @@ workflow ARBOR {
     def ch_fai_bare  = SAMTOOLS_FAIDX.out.fai.map { _m, fai -> fai }.first()
 
     //
+    // MERGE RE-SEQUENCED SAMPLES — samplesheet rows that share a sample name (e.g. the same
+    // sample sequenced on two runs) are concatenated into one sample before analysis.
+    // Single-row samples pass through untouched (their cached tasks are reused).
+    //
+    def ch_grouped = ch_samplesheet
+        .map { meta, reads -> [ meta.id, meta, reads ] }
+        .groupTuple()
+        .branch { _id, _metas, reads_list ->
+            single: reads_list.size() == 1
+            multi:  true
+        }
+    CAT_FASTQ_MERGE(
+        ch_grouped.multi.map { _id, metas, reads_list ->
+            [ metas[0] + [ merged_rows: reads_list.size() ], reads_list.collect { it[0] }, reads_list.collect { it[1] } ]
+        }
+    )
+    def ch_samples = ch_grouped.single
+        .map { _id, metas, reads_list -> [ metas[0], reads_list[0] ] }
+        .mix( CAT_FASTQ_MERGE.out.reads.map { meta, r1, r2 -> [ meta, [r1, r2] ] } )
+
+    //
+    // IN SILICO POOLING — concatenate FASTQs by day group (D3/D7/D14)
+    // Sample IDs follow R[rep]D[day][num] e.g. R1D717, R3D1401
+    //
+    def ch_reads = ch_samples
+    if (params.pooling) {
+        def ch_pooled = ch_samples
+            // --pool_exclude: keep e.g. re-sequenced duplicates (R3D310_9-29) out of the pools so
+            // the same animal isn't counted twice; they are still analysed individually
+            .filter { meta, reads -> !params.pool_exclude || !(meta.id =~ params.pool_exclude) }
+            .map { meta, reads ->
+                def m = (meta.id =~ /D(14|7|3)\d+/)
+                def day = m ? m[0][1] : null
+                [ day, reads ]
+            }
+            .filter { day, reads -> day != null }
+            .groupTuple()
+            .map { day, reads_list ->
+                def meta_pool = [id: "D${day}_pooled", single_end: false]
+                def r1s = reads_list.collect { it[0] }
+                def r2s = reads_list.collect { it[1] }
+                [ meta_pool, r1s, r2s ]
+            }
+        CAT_FASTQ(ch_pooled)
+        ch_reads = ch_samples.mix(
+            CAT_FASTQ.out.reads.map { meta, r1, r2 -> [ meta, [r1, r2] ] }
+        )
+    }
+
+    //
     // READS QC + TRIM
     //
     if (!params.skip_fastqc) {
-        FASTQC(ch_samplesheet)
+        FASTQC(ch_reads)
         ch_multiqc_files = ch_multiqc_files.mix(FASTQC.out.zip.map{ _m, f -> f })
     }
     // fastp takes [meta, reads, adapter_fasta] (adapter [] = auto-detect Illumina adapters)
-    FASTP(ch_samplesheet.map { meta, reads -> [ meta, reads, ch_adapter ] }, false, false, false)
+    FASTP(ch_reads.map { meta, reads -> [ meta, reads, ch_adapter ] }, false, false, false)
     ch_multiqc_files = ch_multiqc_files.mix(FASTP.out.json.map{ _m, f -> f })
+
+    //
+    // DE NOVO ASSEMBLY (parallel branch — does NOT feed mapping/variants/consensus)
+    //
+    if (!params.skip_assembly) {
+        def ch_assembly_reads = FASTP.out.reads.filter { meta, _reads -> !meta.id.endsWith('_pooled') }
+        SPADES_ASSEMBLE(ch_assembly_reads)
+        ch_dashboard_files = ch_dashboard_files.mix(SPADES_ASSEMBLE.out.scaffolds.map{ _m, f -> f })
+        ch_dashboard_files = ch_dashboard_files.mix(SPADES_ASSEMBLE.out.stats.map{ _m, f -> f })
+
+        // ABACAS: order and orient de novo contigs against the reference
+        if (!params.skip_abacas) {
+            def ch_abacas_input = SPADES_ASSEMBLE.out.scaffolds
+                .filter { _meta, scaffolds -> scaffolds.size() > 0 }
+            ABACAS(ch_abacas_input, ch_ref)
+            ch_dashboard_files = ch_dashboard_files.mix(ABACAS.out.results.map{ _m, f -> f }.flatten())
+        }
+    }
 
     //
     // MAP (local) -> sorted BAM -> index for .bai
@@ -86,12 +160,14 @@ workflow ARBOR {
     //
     BOWTIE2_ALIGN(FASTP.out.reads, ch_index, ch_ref, false, true)
     ch_multiqc_files = ch_multiqc_files.mix(BOWTIE2_ALIGN.out.log.map{ _m, f -> f })
+    ch_dashboard_files = ch_dashboard_files.mix(BOWTIE2_ALIGN.out.log.map{ _m, f -> f })
     SAMTOOLS_INDEX(BOWTIE2_ALIGN.out.bam)
     def ch_mapped = BOWTIE2_ALIGN.out.bam.join(SAMTOOLS_INDEX.out.index)      // [meta, bam, bai]
 
     // pre-trim mapping QC
     SAMTOOLS_STATS_RAW(ch_mapped, ch_fai_tuple)
     ch_multiqc_files = ch_multiqc_files.mix(SAMTOOLS_STATS_RAW.out.stats.map{ _m, f -> f })
+    ch_dashboard_files = ch_dashboard_files.mix(SAMTOOLS_STATS_RAW.out.stats.map{ _m, f -> f })
     MOSDEPTH_RAW(ch_mapped.map { m, b, i -> [ m, b, i, [] ] }, ch_ref, [])
     ch_multiqc_files = ch_multiqc_files.mix(MOSDEPTH_RAW.out.summary_txt.map{ _m, f -> f })
 
@@ -105,8 +181,13 @@ workflow ARBOR {
     // post-trim QC
     SAMTOOLS_STATS_TRIM(ch_final, ch_fai_tuple)
     ch_multiqc_files = ch_multiqc_files.mix(SAMTOOLS_STATS_TRIM.out.stats.map{ _m, f -> f })
+    ch_dashboard_files = ch_dashboard_files.mix(SAMTOOLS_STATS_TRIM.out.stats.map{ _m, f -> f })
     MOSDEPTH_TRIM(ch_final.map { m, b, i -> [ m, b, i, [] ] }, ch_ref, [])
     ch_multiqc_files = ch_multiqc_files.mix(MOSDEPTH_TRIM.out.summary_txt.map{ _m, f -> f })
+    // trimmed mosdepth only (raw + trim share the same filename -> flat-stage collision)
+    ch_dashboard_files = ch_dashboard_files.mix(MOSDEPTH_TRIM.out.summary_txt.map{ _m, f -> f })
+    // per-base depth for the per-position coverage plot (Coverage tab)
+    ch_dashboard_files = ch_dashboard_files.mix(MOSDEPTH_TRIM.out.per_base_bed.map{ _m, f -> f })
 
     //
     // VARIANTS (whole multi-segment reference)
@@ -115,12 +196,14 @@ workflow ARBOR {
         // ivar/variants: [meta, bam], path fasta, path fai, path gff, val save_mpileup
         IVAR_VARIANTS(ch_final.map { m, b, _i -> [ m, b ] }, ch_ref_fasta, ch_fai_bare, [], false)
         ch_multiqc_files = ch_multiqc_files.mix(IVAR_VARIANTS.out.tsv.map{ _m, f -> f })
+        ch_dashboard_files = ch_dashboard_files.mix(IVAR_VARIANTS.out.tsv.map{ _m, f -> f })
     }
     if (!params.skip_lofreq) {
         // REVIEW: lofreq indelqual pre-processing before call (recommended for Illumina)
         LOFREQ_INDELQUAL(ch_final.map { m, b, _i -> [ m, b ] }, ch_ref)
         LOFREQ_CALL(LOFREQ_INDELQUAL.out.bam.map { m, b -> [ m, b, [] ] }, ch_ref_fasta)
         LOFREQ_FILTER(LOFREQ_CALL.out.vcf)
+        ch_dashboard_files = ch_dashboard_files.mix(LOFREQ_FILTER.out.vcf.map{ _m, f -> f })
     }
 
     //
@@ -143,11 +226,13 @@ workflow ARBOR {
             .groupTuple()
             .map { seg, fas -> [ [ id:seg ], fas ] }
         FIND_CONCATENATE(ch_seg_consensus)
+        ch_dashboard_files = ch_dashboard_files.mix(FIND_CONCATENATE.out.file_out.map{ _m, f -> f })
         // MSA per segment, folding in optional external reference strains via MAFFT --add
         MAFFT_ALIGN(FIND_CONCATENATE.out.file_out, ch_context, [[],[]], [[],[]], [[],[]], [[],[]], false)
         // ML tree per segment
         IQTREE(MAFFT_ALIGN.out.fas.map { meta, aln -> [ meta, aln, [] ] },
             [], [], [], [], [], [], [], [], [], [], [], [])
+        ch_dashboard_files = ch_dashboard_files.mix(IQTREE.out.phylogeny.map{ _m, f -> f })
     }
 
     //
@@ -205,6 +290,16 @@ workflow ARBOR {
             ]
         }
     )
+    //
+    // MODULE: pre-loaded results dashboard (self-contained HTML with data embedded)
+    //
+    if (!params.skip_dashboard) {
+        ARBOR_DASHBOARD(
+            ch_dashboard_files.collect(),
+            file("${projectDir}/dashboard/arbor_dashboard.html", checkIfExists: true)
+        )
+    }
+
     emit:multiqc_report = MULTIQC.out.report.map { _meta, report -> [report] }.toList() // channel: /path/to/multiqc_report.html
     versions       = ch_versions                 // channel: [ path(versions.yml) ]
 }

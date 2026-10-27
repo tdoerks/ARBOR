@@ -12,8 +12,11 @@
 #SBATCH --mem=8G
 #SBATCH --time=2-00:00:00
 #SBATCH --output=arbor_head_%j.log
-#SBATCH --mail-type=END,FAIL
-#SBATCH --mail-user=tylerdoe@ksu.edu   # KSU address — Beocat's mail relay delivers reliably here
+# Email notifications (optional): put YOUR KSU address below and uncomment BOTH lines
+# (remove one '#' so each starts with exactly '#SBATCH'). Left off by default so
+# nobody accidentally emails someone else. A KSU address delivers most reliably.
+##SBATCH --mail-type=END,FAIL
+##SBATCH --mail-user=your_eid@ksu.edu
 
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
@@ -23,6 +26,10 @@ export NXF_WORK="$PWD/work"
 export NXF_SINGULARITY_CACHEDIR="/fastscratch/$USER/singularity_cache"
 export NXF_HOME="$PWD/.nextflow_home"
 export NXF_VER=26.04.3
+# Legacy (v1) config/script parser: under Nextflow 26's strict (v2) parser, CLI flags arrive as
+# strings and nf-schema rejects booleans (e.g. --pooling, --skip_lofreq: "Value is [string] but
+# should be [boolean]"). Remove once ARBOR declares typed params (params { pooling: Boolean ... }).
+export NXF_SYNTAX_PARSER=v1
 mkdir -p "$NXF_SINGULARITY_CACHEDIR" "$NXF_HOME"
 
 # Environment.
@@ -51,8 +58,11 @@ REPO_ROOT="$(cd "$SLURM_SUBMIT_DIR/../.." && pwd)"
     --input   samplesheet.csv \
     --outdir  results \
     -work-dir "$NXF_WORK" \
-    -resume
+    -resume \
+    "$@"
 
 # Reference (RVFV MP-12 S/M/L), primer BED, and --segments are bundled defaults.
 # For a different virus, add: --reference ref.fa --primer_bed primers.bed --segments id1,id2,...
 # To compare against external strains in the trees, add: --context_fasta known_strains.fa
+# Extra options can also be passed at submit time, e.g.:
+#   sbatch run_arbor.sbatch --pool_exclude '_9-29$'      (keep re-sequenced duplicates out of the day pools)

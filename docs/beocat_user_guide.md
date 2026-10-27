@@ -1,13 +1,19 @@
 # ARBOR — Beocat User Guide
 
+> Just want the commands? See the [command-by-command quickstart](beocat_quickstart.md).
+
 How to run **ARBOR** (viral tiling-amplicon: primer-trimmed mapping → iSNVs → per-segment consensus →
 phylogeny) on KSU [Beocat](https://www.k-state.edu/hpc/), from Illumina paired-end `fastq.gz`.
 
 The RVFV MP-12 reference, primer BED, and `--segments` are **bundled defaults** — you only need a
 samplesheet to run.
 
-> Launch everything from a Beocat **login node** (e.g. `icr-helios`). A small head job drives Nextflow,
-> which submits each step as its own SLURM job under the `beocat` profile.
+> Launch everything from a Beocat **login node** (any `icr-*` host, e.g. `icr-helios`). A small head job
+> drives Nextflow, which submits each step as its own SLURM job under the `beocat` profile.
+
+> **First time on Beocat?** Skim [Good to know](#good-to-know-first-timers) at the bottom first — it
+> covers the handful of things that surprise new users (where reads go, `Undetermined`, the `TDOERKS_`
+> label, and copying results off scratch).
 
 ---
 
@@ -32,16 +38,27 @@ reads ─► FastQC ─► fastp ─► Bowtie2(--local) ─► sort+index ─�
 ## 1. Upload your reads to Beocat
 
 Your fastqs are local (BaseSpace/BCLConvert output, named like `R3D720_S5_L001_R1_001.fastq.gz`).
-Get them onto scratch. From **Windows PowerShell** (or use WinSCP / MobaXterm):
+Put them on **scratch, not your home dir** — home has a small quota, and `/fastscratch` is the big, fast
+space meant for job I/O. First make the folder (on Beocat):
 
-```powershell
-# adjust the local path and your Beocat username
-scp -r "C:\Users\tdoerks\Downloads\BaseSpace\Nathali_run-507641134\*\*.fastq.gz" `
-    tylerdoe@<beocat-login>:/fastscratch/tylerdoe/reads/
+```bash
+mkdir -p /fastscratch/$USER/reads
 ```
 
-The per-sample BaseSpace subfolders are fine — copy all the `*.fastq.gz` into one `reads/` directory on
-scratch. End state: `/fastscratch/$USER/reads/` full of `*_R1_001.fastq.gz` / `*_R2_001.fastq.gz`.
+Then copy from the machine where the data lives. From **Windows PowerShell** (or use WinSCP / MobaXterm),
+replacing `<user>`, `<beocat-login>`, and the local path with your own:
+
+```powershell
+# If the *.fastq.gz sit directly in the BCLConvert output folder:
+scp "C:\path\to\BCLConvert_output\*.fastq.gz" <user>@<beocat-login>:/fastscratch/<user>/reads/
+
+# If they're in per-sample subfolders, flatten them into one reads/ dir instead:
+scp -r "C:\path\to\BCLConvert_output\*\*.fastq.gz" <user>@<beocat-login>:/fastscratch/<user>/reads/
+```
+
+`<beocat-login>` is the same host you SSH into (e.g. `headnode.beocat.ksu.edu`). BCLConvert's
+`Undetermined_*` files can come along — the samplesheet builder skips them automatically.
+End state: `/fastscratch/$USER/reads/` full of `*_R1_001.fastq.gz` / `*_R2_001.fastq.gz`.
 
 ---
 
@@ -65,14 +82,18 @@ merge lanes beforehand if you need both.
 
 ## 3. Launch
 
+Optional — **email notifications**: edit `run_arbor.sbatch` and uncomment the two `##SBATCH --mail-*`
+lines, setting `--mail-user` to your own KSU address. Left off by default. Then:
+
 ```bash
 sbatch run_arbor.sbatch
 ```
 
-That's it — reference, primers, and segment names are bundled defaults. The head job runs:
+That's it — reference, primers, and segment names are bundled defaults. The head job runs your **local
+clone** (so a `git pull` always takes effect) under the `beocat` profile, roughly equivalent to:
 
 ```bash
-nextflow run tdoerks/ARBOR -r main -profile beocat --input samplesheet.csv --outdir results -resume
+nextflow run . -profile beocat --input samplesheet.csv --outdir results -resume
 ```
 
 ---
@@ -127,3 +148,32 @@ internet, pre-pull on a login node (ask and we'll set up `NXF_SINGULARITY_CACHED
 primer pair in that amplicon. The trees still build per segment from whatever consensus is recovered.
 
 **Re-running** — `-resume` is on; just `sbatch run_arbor.sbatch` again — completed steps are cached.
+
+---
+
+## Good to know (first-timers)
+
+Things that surprise people on their first ARBOR run — none are errors:
+
+- **Reads go on `/fastscratch/$USER/`, not your home dir.** Home has a small quota; scratch is the fast,
+  roomy space for job I/O (work dir, container cache, and `results/` all live there too).
+- **`/fastscratch` is auto-purged** after a period of inactivity. When the run finishes, **copy `results/`
+  somewhere permanent** (home, lab storage) — scratch is for active runs, not keeping.
+- **`Undetermined_*` fastqs are skipped automatically** — you'll see `INFO: skipping Undetermined_...`.
+  That's expected (those are unassigned barcodes, not a sample).
+- **The process list shows `TDOERKS_ARBOR:ARBOR:...`.** That `TDOERKS_` prefix is just the pipeline's
+  *name* (from `manifest.name = 'tdoerks/arbor'` — the GitHub repo), like nf-core pipelines show
+  `NFCORE_...`. It is **not** an account or a path: your job runs as **you** and writes under **your**
+  `/fastscratch/$USER/`. Verify any time with `echo $USER`, `pwd`, and `squeue -u $USER`.
+- **The first run is quiet for several minutes.** The head job installs Nextflow and pulls the
+  Singularity containers before any step starts — the log will sit still, then fill in. Later runs reuse
+  the cache and start fast.
+- **`squeue` drip-feeds jobs.** The `beocat` profile throttles submission (≤100 queued, ≤10/min) so a
+  big run doesn't flood the scheduler — you won't see all tasks at once. Normal.
+- **Only per-user edit needed** is the optional email in `run_arbor.sbatch`; everything else keys off
+  `$USER`, so the scripts work for anyone without renaming.
+
+### Explore the results
+The dashboard at [`dashboard/arbor_dashboard.html`](../dashboard/arbor_dashboard.html) opens in any
+browser (no install) — drag in the run's `ivar/*.tsv`, `lofreq/*.vcf`, `mosdepth/*`, `iqtree/*.treefile`
+(and optionally `pipeline_info/params.json`) to browse variants, coverage, trees, and the parameters used.
