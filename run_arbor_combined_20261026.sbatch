@@ -29,6 +29,7 @@ module load Java/17.0.15 2>/dev/null || module load Java/23.0.2 2>/dev/null \
     || module load Java/17 2>/dev/null || true
 
 REPO_ROOT="$SLURM_SUBMIT_DIR"
+RUN_DIR="/fastscratch/tylerdoe/ARBOR/runs/RVFV_combined_20261026"
 NF="$REPO_ROOT/tests/beocat/nextflow"
 if [ ! -x "$NF" ]; then
     echo "Installing standalone Nextflow ${NXF_VER}..."
@@ -42,8 +43,8 @@ java -version 2>&1 | head -1 || true
 echo "============================"
 
 "$NF" run "$REPO_ROOT" -profile beocat \
-    --input   samplesheet.csv \
-    --outdir  results \
+    --input   "$RUN_DIR/samplesheet.csv" \
+    --outdir  "$RUN_DIR/results" \
     --reference "$REPO_ROOT/assets/rvfv/mp12_reference.fa" \
     -work-dir "$NXF_WORK" \
     -resume
