@@ -28,7 +28,7 @@ module load Singularity 2>/dev/null || module load singularity 2>/dev/null || tr
 module load Java/17.0.15 2>/dev/null || module load Java/23.0.2 2>/dev/null \
     || module load Java/17 2>/dev/null || true
 
-REPO_ROOT="$(cd "$SLURM_SUBMIT_DIR/../.." && pwd)"
+REPO_ROOT="$SLURM_SUBMIT_DIR"
 NF="$REPO_ROOT/tests/beocat/nextflow"
 if [ ! -x "$NF" ]; then
     echo "Installing standalone Nextflow ${NXF_VER}..."
