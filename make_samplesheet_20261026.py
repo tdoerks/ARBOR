@@ -25,6 +25,7 @@ with open(old) as f:
         groups[s].append((r1, r2))
 
 # Add new _10-23-26 samples
+new_10_23 = []
 for fname in sorted(os.listdir(fq_dir)):
     if not fname.endswith("_R1_001.fastq.gz"):
         continue
@@ -33,7 +34,17 @@ for fname in sorted(os.listdir(fq_dir)):
     r2 = r1.replace("_R1_", "_R2_")
     if s not in groups:
         order.append(s)
+        new_10_23.append(s)
     groups[s].append((r1, r2))
+
+# Add _combined samples: original + 10-23-26 reads catted together (max coverage)
+for s in new_10_23:
+    base_name = s[:-len("_10-23-26")]
+    if base_name in groups:
+        combined = base_name + "_combined"
+        if combined not in groups:
+            order.append(combined)
+        groups[combined] = groups[base_name] + groups[s]
 
 # Build samplesheet + merge shell script
 ss_rows  = ["sample,fastq_1,fastq_2"]
@@ -57,8 +68,10 @@ with open(out_ss, "w") as f:
 with open(out_sh, "w") as f:
     f.write("\n".join(sh_lines) + "\n")
 
-dupes = [s for s in order if len(groups[s]) > 1]
+dupes    = [s for s in order if len(groups[s]) > 1]
+combined = [s for s in order if s.endswith("_combined")]
 print(f"Wrote {len(ss_rows) - 1} samples (+ header) -> {out_ss}")
+print(f"  {len(order) - len(new_10_23) - len(combined)} original  |  {len(new_10_23)} 10-23-26  |  {len(combined)} combined")
 print(f"Merged {len(dupes)} multi-row samples: {', '.join(dupes)}")
 print(f"Cat commands -> {out_sh}")
 print(f"\nNext steps on Beocat:")
